@@ -1,17 +1,22 @@
 # tpu-kernels
 
-JAX / Pallas kernels for TPU v5e, plus the benchmarking infrastructure for
-iterating on them. Every kernel is judged against the v5e roofline: MFU%
-on compute-bound work, HBM bandwidth % on memory-bound work, and the
-fraction of speed-of-light hit overall.
+A repo for learning to write performant TPU v5e kernels — in plain JAX
+where it's enough, in Pallas where it isn't. Each kernel is judged against
+the v5e roofline: MFU% on compute-bound work, HBM bandwidth % on
+memory-bound work, and the fraction of speed-of-light hit overall.
 
-The repo is built around two ideas:
+The repo is built around three ideas:
 
-1. **Each operation has multiple implementations** — a readable `naive` for
+1. **Kernels follow a curriculum** — see
+   [`docs/curriculum.md`](docs/curriculum.md) for what's been built, what's
+   planned next, and why each kernel is in the list. The order is hybrid:
+   practice JAX where XLA can already approach speed-of-light, drop to
+   Pallas where it can't.
+2. **Each operation has multiple implementations** — a readable `naive` for
    correctness, a tuned `xla` (plain JAX), and a `pallas` kernel only when
    XLA can't reach the target. They live side by side and bench against the
    same roofline so you can see whether dropping to Pallas was worth it.
-2. **Benchmarking is part of the inner loop**, not a separate audit. One
+3. **Benchmarking is part of the inner loop**, not a separate audit. One
    command prints a roofline table, dumps lowered HLO, or attaches an xprof
    trace. Results land in `bench_history/` so trends are tracked.
 
@@ -62,7 +67,7 @@ tests/
   perf/               threshold-gated regression tests, TPU-only
 
 bench_history/<op>/   JSON results timestamped + git-stamped
-docs/                 hardware reference and reusable kernel patterns
+docs/                 curriculum, hardware reference, kernel patterns
 ```
 
 New top-level directories under `src/tpu_kernels/` are added when a real

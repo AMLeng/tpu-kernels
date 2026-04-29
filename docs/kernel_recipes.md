@@ -1,9 +1,14 @@
-# Kernel recipes
+# Kernel patterns
 
-Living patterns doc. Add an entry when a kernel teaches you something
-reusable. Keep entries short — a name, when to use it, the code shape.
+Reusable Pallas patterns picked up while building kernels in this repo.
+Add an entry when a kernel teaches you something the next kernel can
+copy verbatim — not a list of patterns we *want*, but a record of patterns
+we've actually used. For what's planned next, see
+[`curriculum.md`](curriculum.md).
 
-## Tiled elementwise (memory-bound primer)
+Keep entries short: name, when to use it, code shape.
+
+## Tiled elementwise (memory-bound)
 
 When the op is one read + one write per element. Speed-of-light is HBM BW.
 
@@ -22,19 +27,4 @@ pl.pallas_call(
 
 Block sizes worth sweeping: `(128, 128)`, `(256, 256)`, `(512, 512)`,
 `(1024, 1024)`. Bigger blocks reduce DMA overhead but use more VMEM.
-
-## Row reduction (softmax/layernorm primer)
-
-_TODO: add when softmax lands._
-
-## Tiled matmul (compute-bound primer)
-
-_TODO: add when matmul lands._
-
-## Async DMA + double-buffer
-
-_TODO: add when first kernel needs hand-pipelining._
-
-## Distributed ring (collective primer)
-
-_TODO: add when Pallas all-reduce lands._
+First built in `ops/scale/pallas.py`.

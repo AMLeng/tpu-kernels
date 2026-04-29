@@ -45,7 +45,9 @@ runs the same checks, so a green local run should mean a green PR.
 
 ## Adding a new op
 
-Copy `src/tpu_kernels/ops/scale/` as the template. Files needed:
+The kernel to build next is the first `[planned]` entry in
+[`docs/curriculum.md`](docs/curriculum.md); read its rationale before
+starting. Copy `src/tpu_kernels/ops/scale/` as the template. Files needed:
 
 ```
 src/tpu_kernels/ops/<name>/{__init__.py, naive.py, xla.py, PERF.md}
@@ -60,6 +62,9 @@ Pallas variants are plain functions taking `interpret: bool = False` so CPU
 correctness tests can pass it through to `pl.pallas_call(..., interpret=...)`.
 Bench sites jit them in a closure that captures non-array config (e.g.
 `block_shape`); don't decorate the variant itself with `@jax.jit`.
+
+When the new kernel hits its regime target, flip its curriculum entry
+from `[planned]` to `[done]` and link the new `PERF.md`.
 
 ## Bench harness
 
@@ -146,7 +151,10 @@ parsers reject anything that isn't `Name <email>`).
 
 ## Roadmap
 
-Built: `scale` (memory-bound primer). Planned next, in rough order of
-complexity: RMSNorm → softmax → tiled matmul → distributed primitives →
-flash attention → paged attention → ragged paged → MoE. Each follows
-the op-per-directory shape above.
+Kernel ordering and per-kernel rationale live in
+[`docs/curriculum.md`](docs/curriculum.md) — the source of truth for
+*what's planned next* and *why*. When a kernel lands, flip its entry there
+from `[planned]` to `[done]` and link the new `PERF.md`. Don't restate the
+list of upcoming kernels in this file; it would drift.
+
+Built so far: `scale` (memory-bound primer + harness validation).
