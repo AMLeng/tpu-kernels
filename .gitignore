@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.pyright/
+
+# Env
+.venv/
+.env
+
+# uv
+.python-version
+
+# Build
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# Profiling artefacts
+*.pb.gz
+*.xprof
+profiles/
+tmp_profiles/
+
+# OS
+.DS_Store
+
+# Claude Code
+.claude/settings.local.json

@@ -1,0 +1,52 @@
+[project]
+name = "tpu-kernels"
+version = "0.1.0"
+description = "JAX/Pallas kernels for TPU v5e, with benchmarking infrastructure."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = [
+    "jax>=0.9.0",
+    "numpy>=2.0",
+]
+
+[project.optional-dependencies]
+# Install on a TPU VM with: `uv sync --extra tpu`
+tpu = ["jax[tpu]>=0.9.0"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.8",
+    "pyright>=1.1.395",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tpu_kernels"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "benchmarks", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "RUF", "SIM"]
+ignore = ["E741"]  # ambiguous var names (l, I, O) — common in math code
+
+[tool.pyright]
+include = ["src", "benchmarks", "tests"]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "tpu: requires a TPU device (skipped on CPU-only runs)",
+    "perf: performance regression test (slow, TPU-only)",
+]
