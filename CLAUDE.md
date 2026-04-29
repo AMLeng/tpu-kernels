@@ -9,10 +9,6 @@ JAX / Pallas kernels targeting TPU v5e, with a benchmarking harness built
 around roofline analysis (MFU% and HBM bandwidth %). Single-host v5e-8
 today; multi-host planned.
 
-This commit is project scaffolding only — directory layout, build config,
-hardware reference, and the per-op contract. The bench harness and the
-first op (`scale`) land in the next commit.
-
 ## Per-op workflow
 
 Every op lives at `src/tpu_kernels/ops/<op>/` and ships in up to three variants:
@@ -23,10 +19,19 @@ Every op lives at `src/tpu_kernels/ops/<op>/` and ships in up to three variants:
 
 `PERF.md` in the op dir is forward-looking, not a log. Four lines:
 `Target` / `Current` / `Bottleneck` / `Next`. Use `docs/PERF_TEMPLATE.md`.
-Per-attempt history goes in `git log`, not in `PERF.md`.
+Per-attempt history goes in `git log` and `bench_history/<op>/*.json`,
+not in `PERF.md`.
 
 If `xla.py` already hits the target, **stop**. Don't write Pallas just
-because the slot exists.
+because the slot exists; it must beat `xla` in `compare` to justify itself.
+
+## After modifying a kernel
+
+1. `uv run pytest tests/correctness/test_<op>.py` — must pass.
+2. `uv run python -m benchmarks.suites.<op>` — re-bench (TPU only; CPU
+   numbers from `interpret=True` are not meaningful).
+3. Update `PERF.md`: new `Current %`, new `Bottleneck` hypothesis, new `Next`.
+4. The new `bench_history/<op>/<timestamp>.json` is part of the commit.
 
 ## After any change
 
@@ -35,8 +40,53 @@ uv run ruff check . && uv run ruff format . && uv run pyright
 uv run pytest
 ```
 
-All four must be clean before committing. CI runs the same checks
-(`.github/workflows/ci.yml`) so a green local run should mean a green PR.
+All four must be clean before committing. CI (`.github/workflows/ci.yml`)
+runs the same checks, so a green local run should mean a green PR.
+
+## Adding a new op
+
+Copy `src/tpu_kernels/ops/scale/` as the template. Files needed:
+
+```
+src/tpu_kernels/ops/<name>/{__init__.py, naive.py, xla.py, PERF.md}
+src/tpu_kernels/ops/<name>/pallas.py        # optional
+tests/correctness/test_<name>.py            # parametrize variants vs naive
+benchmarks/suites/<name>.py                 # argparse CLI calling compare(...)
+```
+
+`__init__.py` re-exports as `<op>_naive`, `<op>_xla`, `<op>_pallas`.
+
+Pallas variants are plain functions taking `interpret: bool = False` so CPU
+correctness tests can pass it through to `pl.pallas_call(..., interpret=...)`.
+Bench sites jit them in a closure that captures non-array config (e.g.
+`block_shape`); don't decorate the variant itself with `@jax.jit`.
+
+## Bench harness
+
+- `benchmarks/runner.py` — warmup + N timed iters around `block_until_ready`.
+- `benchmarks/roofline.py` — v5e per-chip peaks, MFU/BW math. **All
+  hardware constants live here.** Update in one place if Google revises figures.
+- `benchmarks/compare.py` — N-variant comparison table, optional HLO dump,
+  writes JSON to `bench_history/<op>/` with the current git SHA.
+- `benchmarks/suites/<op>.py` — one suite file per op.
+
+Run a suite: `uv run python -m benchmarks.suites.<op>`. The README cookbook
+has the full set of flags (`--dump-hlo`, `--profile-dir`, `--block`, etc.).
+
+## Fixing a bug in the harness
+
+Harness changes (`benchmarks/`, `tests/conftest.py`, anything that judges
+kernels) are TDD-only: write the regression test first, watch it fail,
+then make it pass. The failing test ships in the same commit as the
+fix. The harness is what we trust to call a kernel correct or fast —
+silent regressions there are silent regressions everywhere. Kernel
+edits don't carry this rule; harness edits always do.
+
+## Bench inputs
+
+Use `jax.random.normal(jax.random.key(0), shape, dtype)` for reproducible
+inputs. **Avoid `jnp.zeros` / `jnp.ones`** — XLA can constant-fold them and
+make a kernel look faster than it is.
 
 ## Tests
 
@@ -46,6 +96,17 @@ All four must be clean before committing. CI runs the same checks
   (`@pytest.mark.tpu`, `@pytest.mark.perf`).
 
 Run: `uv run pytest`. CPU-only runs skip TPU-marked tests.
+
+## Roofline targets (starting points)
+
+| Regime              | Target                  |
+| ------------------- | ----------------------- |
+| Memory-bound        | ≥ 85% HBM BW            |
+| Compute-bound       | ≥ 80% MFU               |
+| Mixed/attention-ish | ≥ 70% of speed-of-light |
+
+Tighten once a kernel has been measured and you know what's reachable on
+v5e for that shape.
 
 ## Conventions
 
@@ -61,7 +122,9 @@ Run: `uv run pytest`. CPU-only runs skip TPU-marked tests.
 
 Conventional commits, scoped by op when relevant:
 `feat(scale): add Pallas variant`, `perf(rmsnorm): tile by (8, 128)`,
-`docs(v5e): correct HBM bandwidth`.
+`docs(v5e): correct HBM bandwidth`. A perf-relevant commit should bundle
+the kernel edit, the new `bench_history/<op>/<timestamp>.json`, and the
+`PERF.md` update.
 
 Co-author trailer (when applicable): use the bare RFC form
 `Co-Authored-By: <Name> <email>`. **No parentheticals or annotations
@@ -75,10 +138,15 @@ parsers reject anything that isn't `Name <email>`).
 - Don't skip `naive.py` for a new op. Correctness oracle first, always.
 - Don't tune `naive.py` — that defeats its purpose.
 - Don't put per-attempt logs in `PERF.md` — that's `git log`'s job.
+- Don't hardcode hardware numbers outside `benchmarks/roofline.py`.
+- Don't gitignore `bench_history/` — trend tracking depends on it.
+- Don't commit `bench_history/` runs from non-canonical hardware (only
+  real v5e results belong in trend tracking).
+- Don't use `jnp.zeros` / `jnp.ones` as bench inputs (constant-folding).
 
 ## Roadmap
 
-No ops built yet. Planned next, in rough order of complexity:
-scale → RMSNorm → softmax → tiled matmul → distributed primitives →
+Built: `scale` (memory-bound primer). Planned next, in rough order of
+complexity: RMSNorm → softmax → tiled matmul → distributed primitives →
 flash attention → paged attention → ragged paged → MoE. Each follows
 the op-per-directory shape above.
