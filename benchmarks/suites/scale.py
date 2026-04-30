@@ -24,6 +24,7 @@ from benchmarks.compare import compare
 from benchmarks.roofline import v5e
 from benchmarks.sweep import sweep
 from tpu_kernels.ops.scale import scale_pallas, scale_xla
+from tpu_kernels.ops.scale.pallas import DEFAULT_BLOCK
 
 
 def _csv_ints(s: str) -> tuple[int, ...]:
@@ -31,7 +32,13 @@ def _csv_ints(s: str) -> tuple[int, ...]:
     return tuple(int(x) for x in s.split(","))
 
 
-def main() -> None:
+def _make_parser() -> argparse.ArgumentParser:
+    """Build the suite's CLI parser.
+
+    Extracted so tests can pin the ``--block`` default against the kernel's
+    own ``DEFAULT_BLOCK`` — a no-flag run must reproduce the number that
+    ``PERF.md`` records as Current.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("--m", type=int, default=8192)
     parser.add_argument("--n", type=int, default=8192)
@@ -39,7 +46,7 @@ def main() -> None:
         "--block",
         type=int,
         nargs=2,
-        default=(256, 256),
+        default=DEFAULT_BLOCK,
         help="Single block shape (ignored when --sweep-block is set).",
     )
     parser.add_argument(
@@ -53,7 +60,11 @@ def main() -> None:
     parser.add_argument("--dtype", choices=["bf16", "f32"], default="bf16")
     parser.add_argument("--dump-hlo", action="store_true")
     parser.add_argument("--profile-dir", default=None)
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = _make_parser().parse_args()
 
     dtype = jnp.bfloat16 if args.dtype == "bf16" else jnp.float32
     bytes_per_elem = jnp.dtype(dtype).itemsize
