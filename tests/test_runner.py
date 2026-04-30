@@ -15,6 +15,10 @@ from benchmarks.runner import (
     BenchResult,
     _build_unrolled,
     _choose_k,
+    _cluster_events_by_gap,
+    _durations_from_clusters,
+    _find_xplane,
+    _xla_ops_events,
     bench,
 )
 
@@ -182,6 +186,23 @@ def test_bench_device_timing_with_explicit_chain_raises() -> None:
         )
 
 
+def test_bench_unroll_with_explicit_gap_ns_raises() -> None:
+    """gap_ns is a device-mode XPlane knob; rejecting it under unroll
+    keeps the API symmetric with the chain= validation and prevents a
+    silent no-op when the caller intended timing='device'.
+    """
+    with pytest.raises(ValueError, match=r"(?i)gap_ns.*device|device.*gap_ns"):
+        bench(
+            "test",
+            lambda x: x,
+            [jnp.zeros(10)],
+            timing="unroll",
+            gap_ns=50_000,
+            warmup=0,
+            iters=1,
+        )
+
+
 def test_bench_device_timing_on_cpu_raises() -> None:
     """timing='device' relies on TPU XPlane parsing; refuse on CPU rather than fall back silently."""  # noqa: E501
     with pytest.raises(RuntimeError, match=r"(?i)device.*tpu|tpu.*device|requires.*tpu"):
@@ -228,6 +249,7 @@ def test_bench_result_back_compat_defaults() -> None:
     br = BenchResult(name="x", times_s=[1.0], warmup_iters=1, timed_iters=1)
     assert br.unroll == 1
     assert br.timing == "unroll"
+    assert br.cluster_mismatch is False
 
 
 def test_bench_unroll_chooses_k_above_one_for_fast_kernel_on_cpu() -> None:
@@ -249,6 +271,150 @@ def test_bench_unroll_chooses_k_above_one_for_fast_kernel_on_cpu() -> None:
         iters=3,
     )
     assert result.unroll > 1
+
+
+# ---- device-timing parse helpers (CPU-runnable) ------------------------
+
+
+def test_cluster_events_by_gap_separates_distant_events() -> None:
+    """Events with a gap > threshold start a new cluster.
+
+    Inputs are (start_ns, end_ns, duration_ns) tuples. Gap is measured
+    end-of-prev to start-of-next. The two close events fall in cluster 0,
+    the distant one starts cluster 1.
+    """
+    events = [
+        (0, 10, 10),
+        (11, 20, 9),  # gap from prev_end=10 → start=11 is 1ns: same cluster
+        (100, 110, 10),  # gap from prev_end=20 → start=100 is 80ns: new cluster
+    ]
+    clusters = _cluster_events_by_gap(events, gap_ns=50)
+    assert len(clusters) == 2
+    assert clusters[0] == [(0, 10, 10), (11, 20, 9)]
+    assert clusters[1] == [(100, 110, 10)]
+
+
+def test_cluster_events_by_gap_single_event() -> None:
+    assert _cluster_events_by_gap([(0, 10, 10)], gap_ns=100) == [[(0, 10, 10)]]
+
+
+def test_cluster_events_by_gap_empty() -> None:
+    assert _cluster_events_by_gap([], gap_ns=100) == []
+
+
+def test_cluster_events_by_gap_sorts_by_start() -> None:
+    """Out-of-order input is sorted before clustering — caller doesn't have to."""
+    events = [(100, 110, 10), (0, 10, 10), (11, 20, 9)]
+    clusters = _cluster_events_by_gap(events, gap_ns=50)
+    assert len(clusters) == 2
+    assert clusters[0][0] == (0, 10, 10)
+    assert clusters[1][0] == (100, 110, 10)
+
+
+def test_durations_from_clusters_sums_event_durations_per_cluster() -> None:
+    """Per-cluster duration is the sum of event ``duration_ns`` (device-active
+    time), not (last_end - first_start) which would also count idle gaps within
+    a cluster."""
+    clusters = [
+        [(0, 10, 10), (11, 20, 9)],  # 19ns active
+        [(100, 110, 10)],  # 10ns active
+    ]
+    durs = _durations_from_clusters(clusters)
+    assert durs == pytest.approx([19e-9, 10e-9])
+
+
+def test_find_xplane_locates_pb_in_subdir(tmp_path) -> None:
+    """jax.profiler.trace writes under plugins/profile/<run>/<host>.xplane.pb;
+    finder must walk the tree."""
+    inner = tmp_path / "plugins" / "profile" / "20260101_120000"
+    inner.mkdir(parents=True)
+    pb = inner / "host.xplane.pb"
+    pb.write_bytes(b"")
+    found = _find_xplane(str(tmp_path))
+    assert found == str(pb)
+
+
+def test_find_xplane_raises_when_missing(tmp_path) -> None:
+    with pytest.raises(FileNotFoundError, match=r"(?i)xplane"):
+        _find_xplane(str(tmp_path))
+
+
+# ---- _xla_ops_events: TPU-plane selection (CPU, fake ProfileData) -------
+
+
+class _FakeEvent:
+    def __init__(self, start_ns: int, end_ns: int, duration_ns: int) -> None:
+        self.start_ns = start_ns
+        self.end_ns = end_ns
+        self.duration_ns = duration_ns
+
+
+class _FakeLine:
+    def __init__(self, name: str, events: list[_FakeEvent]) -> None:
+        self.name = name
+        self.events = events
+
+
+class _FakePlane:
+    def __init__(self, name: str, lines: list[_FakeLine]) -> None:
+        self.name = name
+        self.lines = lines
+
+
+class _FakePD:
+    def __init__(self, planes: list[_FakePlane]) -> None:
+        self.planes = planes
+
+
+def test_xla_ops_events_returns_events_from_single_tpu_plane() -> None:
+    pd = _FakePD(
+        [
+            _FakePlane(
+                "/device:TPU:0",
+                [_FakeLine("XLA Ops", [_FakeEvent(0, 10, 10), _FakeEvent(20, 30, 10)])],
+            ),
+            _FakePlane("/host:CPU", [_FakeLine("XLA Ops", [_FakeEvent(0, 5, 5)])]),
+        ]
+    )
+    assert _xla_ops_events(pd) == [(0, 10, 10), (20, 30, 10)]
+
+
+def test_xla_ops_events_skips_planes_without_xla_ops_line() -> None:
+    """A TPU plane present but with no 'XLA Ops' line yields []."""
+    pd = _FakePD([_FakePlane("/device:TPU:0", [_FakeLine("Steps", [_FakeEvent(0, 10, 10)])])])
+    assert _xla_ops_events(pd) == []
+
+
+def test_xla_ops_events_returns_empty_when_no_tpu_plane() -> None:
+    pd = _FakePD([_FakePlane("/host:CPU", [_FakeLine("XLA Ops", [_FakeEvent(0, 10, 10)])])])
+    assert _xla_ops_events(pd) == []
+
+
+def test_xla_ops_events_raises_on_multiple_tpu_planes_with_events() -> None:
+    """Sharded execution would record events on every chip's plane;
+    silently picking one would understate BW% by 1/N. Surface as an
+    error until the parser learns to coalesce."""
+    pd = _FakePD(
+        [
+            _FakePlane("/device:TPU:0", [_FakeLine("XLA Ops", [_FakeEvent(0, 10, 10)])]),
+            _FakePlane("/device:TPU:1", [_FakeLine("XLA Ops", [_FakeEvent(0, 10, 10)])]),
+        ]
+    )
+    with pytest.raises(RuntimeError, match=r"(?i)multiple.*tpu|sharded"):
+        _xla_ops_events(pd)
+
+
+def test_xla_ops_events_one_active_plane_among_many_is_fine() -> None:
+    """Other TPU planes existing in the XPlane (e.g. an idle chip with
+    zero events) must NOT trip the multi-plane guard — only planes with
+    actual events count."""
+    pd = _FakePD(
+        [
+            _FakePlane("/device:TPU:0", [_FakeLine("XLA Ops", [_FakeEvent(0, 10, 10)])]),
+            _FakePlane("/device:TPU:1", [_FakeLine("XLA Ops", [])]),
+        ]
+    )
+    assert _xla_ops_events(pd) == [(0, 10, 10)]
 
 
 # Keep jax import live (avoids "imported but unused" if all tests above are

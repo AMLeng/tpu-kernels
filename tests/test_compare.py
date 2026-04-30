@@ -244,6 +244,7 @@ def test_write_history_records_unroll_and_timing_per_variant(
         timed_iters=1,
         unroll=64,
         timing="unroll",
+        cluster_mismatch=True,
     )
     roof = analyze(flops=1, nbytes=1, seconds=1.0, hw=v5e())
     rows: list[BenchRow] = [("v", br, roof)]
@@ -253,6 +254,7 @@ def test_write_history_records_unroll_and_timing_per_variant(
     entry = record["variants"]["v"]
     assert entry["unroll"] == 64
     assert entry["timing"] == "unroll"
+    assert entry["cluster_mismatch"] is True
 
 
 def test_write_history_stamps_kind_compare(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

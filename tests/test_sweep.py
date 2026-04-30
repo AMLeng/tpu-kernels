@@ -192,6 +192,9 @@ def test_sweep_records_unroll_and_timing_per_variant(
         assert isinstance(entry["unroll"], int)
         assert entry["unroll"] >= 1
         assert entry["timing"] in {"unroll", "device"}
+        # On CPU/unroll this is always False; the assertion proves the
+        # field round-trips as a bool, not that the parse mismatched.
+        assert entry["cluster_mismatch"] is False
 
 
 def test_skipped_and_errored_configs_persist_in_history(

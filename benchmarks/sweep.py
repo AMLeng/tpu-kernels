@@ -280,6 +280,7 @@ def _write_sweep_history(
                 "stdev_s": br.stdev_s,
                 "timing": br.timing,
                 "unroll": br.unroll,
+                "cluster_mismatch": br.cluster_mismatch,
                 "mfu": roof.mfu,
                 "bw_util": roof.bw_util,
                 "ici_util": roof.ici_util,

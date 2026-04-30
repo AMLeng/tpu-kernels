@@ -234,8 +234,12 @@ def _write_history(
                 # ``timing`` distinguishes wallclock-amortized (unroll) from
                 # device-clock (XPlane) numbers; ``unroll`` exposes the k that
                 # was used and surfaces a hit on the k_max cap.
+                # ``cluster_mismatch`` is device-mode-only; True iff the
+                # XPlane parse split iters into a different number of
+                # clusters than expected (gap heuristic miscounted).
                 "timing": br.timing,
                 "unroll": br.unroll,
+                "cluster_mismatch": br.cluster_mismatch,
                 "mfu": roof.mfu,
                 "bw_util": roof.bw_util,
                 "ici_util": roof.ici_util,
