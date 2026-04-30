@@ -20,6 +20,15 @@ dev = [
     "pytest>=8.3",
     "ruff>=0.8",
     "pyright>=1.1.395",
+    # Trace viewing for `--profile-dir` output. `xprof` is the renamed
+    # `tensorboard-plugin-profile` (under openxla/xprof) and ships its own
+    # standalone CLI (`uv run xprof <dir>`) — no TensorBoard needed.
+    # The same `--profile-dir` directory also contains a Perfetto-compatible
+    # *.trace.json.gz that can be dragged into ui.perfetto.dev directly.
+    # Floor of 2.22.2: that's where xprof switched to py3-none-manylinux
+    # wheels; earlier releases ship cp31x-tagged wheels that exclude newer
+    # Pythons.
+    "xprof>=2.22.2",
 ]
 
 [build-system]

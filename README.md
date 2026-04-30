@@ -132,8 +132,17 @@ of the kernel:
 
 ```bash
 uv run python -m benchmarks.suites.scale --profile-dir /tmp/scale_trace
-# load /tmp/scale_trace into TensorBoard / xprof
+
+# Inspect the trace. Pick whichever you prefer:
+uv run xprof /tmp/scale_trace                     # full XProf UI on :8791
+# or drag /tmp/scale_trace/plugins/profile/*/*.trace.json.gz into
+# ui.perfetto.dev for a quick timeline view (no install, no server).
 ```
+
+`xprof` is in the `dev` group, so a plain `uv sync` brings it in. It
+gives you the Op Profile, Memory Profile, Trace Viewer, and HLO graph —
+the views that actually report MFU / HBM% / step time. Perfetto only
+shows the timeline; use it for quick "what ran when" sanity checks.
 
 **7. Sweep a config knob.** For Pallas kernels, this is usually block
 shape. Use `--sweep-block`, which Cartesian-products the two lists,
@@ -211,6 +220,7 @@ uv run python -m benchmarks.suites.scale --dtype bf16
 uv run python -m benchmarks.suites.scale --block 512 512
 uv run python -m benchmarks.suites.scale --dump-hlo
 uv run python -m benchmarks.suites.scale --profile-dir /tmp/trace
+uv run xprof /tmp/trace                          # open the trace at :8791
 
 # Cartesian sweep over (bm, bn) — one JSON record, sorted leaderboard,
 # divisibility-invalid shapes skipped instead of crashing the loop.

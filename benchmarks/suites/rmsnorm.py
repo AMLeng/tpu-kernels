@@ -3,6 +3,8 @@
 Run: `uv run python -m benchmarks.suites.rmsnorm`
 With HLO dump: `... --dump-hlo`
 With xprof trace: `... --profile-dir /tmp/rmsnorm_trace`
+    Then: `uv run xprof /tmp/rmsnorm_trace` (full UI on :8791), or drag
+    `<dir>/plugins/profile/*/*.trace.json.gz` into ui.perfetto.dev.
 
 Memory-bound. The interesting knob is ``--dtype`` — the f32-accumulator
 inside `naive` is unconditional, but the input/output dtype changes how

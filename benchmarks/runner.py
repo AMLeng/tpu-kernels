@@ -2,7 +2,8 @@
 
 Numbers come from `time.perf_counter` around `jax.block_until_ready`. JIT
 compilation happens before the first timed iteration so it doesn't pollute
-the median. Use `profile_dir` to drop an xprof trace alongside the run.
+the median. Use `profile_dir` to drop an xprof trace alongside the run;
+view it with `uv run xprof <profile_dir>`.
 """
 
 from __future__ import annotations

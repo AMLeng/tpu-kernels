@@ -9,6 +9,8 @@ Cartesian block sweep (Pallas tuning):
 
 With HLO dump: `... --dump-hlo`
 With xprof trace: `... --profile-dir /tmp/scale_trace`
+    Then: `uv run xprof /tmp/scale_trace` (full UI on :8791), or drag
+    `<dir>/plugins/profile/*/*.trace.json.gz` into ui.perfetto.dev.
 """
 
 from __future__ import annotations
