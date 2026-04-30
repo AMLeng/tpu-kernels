@@ -278,6 +278,8 @@ def _write_sweep_history(
                 "p99_s": br.p99_s,
                 "min_s": br.min_s,
                 "stdev_s": br.stdev_s,
+                "timing": br.timing,
+                "unroll": br.unroll,
                 "mfu": roof.mfu,
                 "bw_util": roof.bw_util,
                 "ici_util": roof.ici_util,

@@ -231,6 +231,11 @@ def _write_history(
                 "p99_s": br.p99_s,
                 "min_s": br.min_s,
                 "stdev_s": br.stdev_s,
+                # ``timing`` distinguishes wallclock-amortized (unroll) from
+                # device-clock (XPlane) numbers; ``unroll`` exposes the k that
+                # was used and surfaces a hit on the k_max cap.
+                "timing": br.timing,
+                "unroll": br.unroll,
                 "mfu": roof.mfu,
                 "bw_util": roof.bw_util,
                 "ici_util": roof.ici_util,

@@ -226,6 +226,35 @@ def test_write_history_config_defaults_to_empty_dict(
     assert record["config"] == {}
 
 
+def test_write_history_records_unroll_and_timing_per_variant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Per-variant ``unroll`` and ``timing`` round-trip into the JSON record.
+
+    Trend tooling needs to know whether a number came from unroll-mode
+    (wallclock / k) or device-mode (XPlane), since they aren't directly
+    comparable. ``unroll`` also surfaces when a kernel hit ``k_max``.
+    """
+    monkeypatch.setattr("benchmarks._history.HISTORY_DIR", tmp_path)
+    monkeypatch.setattr("benchmarks._history.REPO_ROOT", tmp_path)
+    br = BenchResult(
+        name="v",
+        times_s=[1.0],
+        warmup_iters=1,
+        timed_iters=1,
+        unroll=64,
+        timing="unroll",
+    )
+    roof = analyze(flops=1, nbytes=1, seconds=1.0, hw=v5e())
+    rows: list[BenchRow] = [("v", br, roof)]
+    _write_history("op_q", v5e(), 1, 1, "bf16", 0, rows)
+    files = list((tmp_path / "op_q").glob("*.json"))
+    record = json.loads(files[0].read_text())
+    entry = record["variants"]["v"]
+    assert entry["unroll"] == 64
+    assert entry["timing"] == "unroll"
+
+
 def test_write_history_stamps_kind_compare(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Every compare record carries ``kind: "compare"`` so an aggregator can
     multiplex it with sweep records (``kind: "sweep"``) without sniffing fields.

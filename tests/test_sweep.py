@@ -166,6 +166,34 @@ def test_sweep_writes_one_history_record_with_per_variant_config(
         assert set(entry["config"].keys()) == {"bm", "bn"}
 
 
+def test_sweep_records_unroll_and_timing_per_variant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each sweep variant entry carries ``unroll`` and ``timing`` so a
+    trend tool can tell which timing mode produced a number and whether
+    a kernel hit the unroll cap. Sibling test for compare lives in
+    tests/test_compare.py.
+    """
+    _setup_history(tmp_path, monkeypatch)
+    sweep(
+        op="op_t",
+        variant_factory=_identity_factory,
+        axes={"bm": [8]},
+        args=(_x(),),
+        flops=1,
+        nbytes=1,
+        hw=v5e(),
+        warmup=0,
+        iters=1,
+    )
+    files = list((tmp_path / "op_t").glob("*.json"))
+    record = json.loads(files[0].read_text())
+    for entry in record["variants"].values():
+        assert isinstance(entry["unroll"], int)
+        assert entry["unroll"] >= 1
+        assert entry["timing"] in {"unroll", "device"}
+
+
 def test_skipped_and_errored_configs_persist_in_history(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
