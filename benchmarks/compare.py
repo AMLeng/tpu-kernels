@@ -22,16 +22,15 @@ bench_history/<op>/. With `dump_hlo=True`, prints the lowered HLO per variant.
 from __future__ import annotations
 
 import json
-import subprocess
 import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 import jax
 
+from benchmarks import _history
 from benchmarks.roofline import (
     FlopDtype,
     HardwarePeak,
@@ -43,9 +42,6 @@ from benchmarks.roofline import (
     v5e,
 )
 from benchmarks.runner import BenchResult, bench
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-HISTORY_DIR = REPO_ROOT / "bench_history"
 
 # Type alias for the per-variant tuple carried through the table/history helpers.
 BenchRow = tuple[str, BenchResult, Roofline]
@@ -211,15 +207,18 @@ def _write_history(
     bench_results: list[BenchRow],
     config: dict[str, Any] | None = None,
 ) -> None:
-    op_dir = HISTORY_DIR / op
+    op_dir = _history.HISTORY_DIR / op
     op_dir.mkdir(parents=True, exist_ok=True)
     # Microsecond resolution: a sweep that fires two compare() calls inside one
     # second must not silently overwrite the earlier record's JSON.
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S_%fZ")
     record: dict[str, Any] = {
         "op": op,
+        # ``kind`` lets a single aggregator read both compare and sweep records;
+        # the sibling sweep writer stamps ``"sweep"`` for the same purpose.
+        "kind": "compare",
         "timestamp": ts,
-        "git_sha": _git_sha(),
+        "git_sha": _history.git_sha(),
         "hw": asdict(hw),
         "flops": flops,
         "bytes": nbytes,
@@ -243,38 +242,4 @@ def _write_history(
     }
     out = op_dir / f"{ts}.json"
     out.write_text(json.dumps(record, indent=2))
-    print(f"  wrote {out.relative_to(REPO_ROOT)}")
-
-
-def _git_sha() -> str | None:
-    """Resolve HEAD's SHA, with a "-dirty" suffix if the working tree has changes.
-
-    Trend tracking from `bench_history/` is only meaningful when each record
-    can be tied to a specific tree state — and a clean SHA on a dirty tree
-    silently lies about that. The dirty check uses `git status --porcelain`
-    so untracked files count too (a forgotten `.py` in `benchmarks/` would
-    affect the run).
-    """
-    try:
-        head = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-        if head.returncode != 0:
-            return None
-        sha = head.stdout.strip()
-        status = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-        if status.returncode == 0 and status.stdout.strip():
-            sha = f"{sha}-dirty"
-        return sha
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
+    print(f"  wrote {out.relative_to(_history.REPO_ROOT)}")

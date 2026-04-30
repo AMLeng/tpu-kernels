@@ -136,13 +136,17 @@ uv run python -m benchmarks.suites.scale --profile-dir /tmp/scale_trace
 ```
 
 **7. Sweep a config knob.** For Pallas kernels, this is usually block
-shape:
+shape. Use `--sweep-block`, which Cartesian-products the two lists,
+filters out divisibility-invalid pairs, and prints a perf-sorted
+leaderboard with the winner marked:
 
 ```bash
-for b in 128 256 512 1024; do
-  uv run python -m benchmarks.suites.scale --block $b $b
-done
+uv run python -m benchmarks.suites.scale \
+  --sweep-block 8,16,32,64,128,256 128,256,512,1024
 ```
+
+One JSON lands in `bench_history/scale/` per sweep — `kind: "sweep"`,
+with each variant's structured config preserved alongside its timing.
 
 **8. Update `PERF.md`** with the new current %, new bottleneck hypothesis,
 and new next-thing-to-try. The history of what was tried lives in `git log`;
@@ -208,10 +212,9 @@ uv run python -m benchmarks.suites.scale --block 512 512
 uv run python -m benchmarks.suites.scale --dump-hlo
 uv run python -m benchmarks.suites.scale --profile-dir /tmp/trace
 
-# Sweep a block shape and write all results to bench_history/
-for b in 128 256 512 1024; do
-  uv run python -m benchmarks.suites.scale --block $b $b
-done
+# Cartesian sweep over (bm, bn) — one JSON record, sorted leaderboard,
+# divisibility-invalid shapes skipped instead of crashing the loop.
+uv run python -m benchmarks.suites.scale --sweep-block 8,16,32,64,128,256 128,256,512,1024
 
 # Diff the two most recent bench records for an op
 ls -t bench_history/scale/*.json | head -2 | xargs diff

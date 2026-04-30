@@ -17,10 +17,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from benchmarks._history import git_sha
 from benchmarks.compare import (
     BenchRow,
     _check_ici_consistency,
-    _git_sha,
     _print_table,
     _write_history,
 )
@@ -72,8 +72,8 @@ def _init_repo(path: Path) -> None:
 
 def test_git_sha_clean_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _init_repo(tmp_path)
-    monkeypatch.setattr("benchmarks.compare.REPO_ROOT", tmp_path)
-    sha = _git_sha()
+    monkeypatch.setattr("benchmarks._history.REPO_ROOT", tmp_path)
+    sha = git_sha()
     assert sha is not None
     assert len(sha) == 40  # full SHA, no suffix
     assert not sha.endswith("-dirty")
@@ -84,8 +84,8 @@ def test_git_sha_dirty_tree_with_modified_file(
 ) -> None:
     _init_repo(tmp_path)
     (tmp_path / "f").write_text("modified")  # tracked file changed, not committed
-    monkeypatch.setattr("benchmarks.compare.REPO_ROOT", tmp_path)
-    sha = _git_sha()
+    monkeypatch.setattr("benchmarks._history.REPO_ROOT", tmp_path)
+    sha = git_sha()
     assert sha is not None
     assert sha.endswith("-dirty")
 
@@ -97,15 +97,15 @@ def test_git_sha_dirty_tree_with_untracked_file(
     # the run even though `git diff HEAD` wouldn't see it.
     _init_repo(tmp_path)
     (tmp_path / "untracked.py").write_text("print('x')")
-    monkeypatch.setattr("benchmarks.compare.REPO_ROOT", tmp_path)
-    sha = _git_sha()
+    monkeypatch.setattr("benchmarks._history.REPO_ROOT", tmp_path)
+    sha = git_sha()
     assert sha is not None
     assert sha.endswith("-dirty")
 
 
 def test_git_sha_returns_none_outside_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("benchmarks.compare.REPO_ROOT", tmp_path)
-    assert _git_sha() is None
+    monkeypatch.setattr("benchmarks._history.REPO_ROOT", tmp_path)
+    assert git_sha() is None
 
 
 def _history_row() -> BenchRow:
@@ -123,9 +123,9 @@ def test_write_history_records_in_same_second_dont_collide(
     A seconds-resolution timestamp silently dropped the earlier record on
     sweep loops; microsecond resolution prevents that.
     """
-    monkeypatch.setattr("benchmarks.compare.HISTORY_DIR", tmp_path)
+    monkeypatch.setattr("benchmarks._history.HISTORY_DIR", tmp_path)
     # _write_history prints `out.relative_to(REPO_ROOT)`; keep that legal.
-    monkeypatch.setattr("benchmarks.compare.REPO_ROOT", tmp_path)
+    monkeypatch.setattr("benchmarks._history.REPO_ROOT", tmp_path)
 
     fake_times = iter(
         [
@@ -198,8 +198,8 @@ def test_write_history_records_config(tmp_path: Path, monkeypatch: pytest.Monkey
     Lets a sweep keep stable variant names ("pallas", not "pallas_256x256")
     while still being queryable across runs.
     """
-    monkeypatch.setattr("benchmarks.compare.HISTORY_DIR", tmp_path)
-    monkeypatch.setattr("benchmarks.compare.REPO_ROOT", tmp_path)
+    monkeypatch.setattr("benchmarks._history.HISTORY_DIR", tmp_path)
+    monkeypatch.setattr("benchmarks._history.REPO_ROOT", tmp_path)
     rows = [_history_row()]
     cfg = {"block_shape": [256, 256]}
     _write_history("op_x", v5e(), 1, 1, "bf16", 0, rows, config=cfg)
@@ -217,10 +217,24 @@ def test_write_history_config_defaults_to_empty_dict(
     Always-present shape keeps downstream parsers from needing a `.get`
     fallback.
     """
-    monkeypatch.setattr("benchmarks.compare.HISTORY_DIR", tmp_path)
-    monkeypatch.setattr("benchmarks.compare.REPO_ROOT", tmp_path)
+    monkeypatch.setattr("benchmarks._history.HISTORY_DIR", tmp_path)
+    monkeypatch.setattr("benchmarks._history.REPO_ROOT", tmp_path)
     rows = [_history_row()]
     _write_history("op_y", v5e(), 1, 1, "bf16", 0, rows)
     files = list((tmp_path / "op_y").glob("*.json"))
     record = json.loads(files[0].read_text())
     assert record["config"] == {}
+
+
+def test_write_history_stamps_kind_compare(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every compare record carries ``kind: "compare"`` so an aggregator can
+    multiplex it with sweep records (``kind: "sweep"``) without sniffing fields.
+    Sibling test for sweep lives in tests/test_sweep.py.
+    """
+    monkeypatch.setattr("benchmarks._history.HISTORY_DIR", tmp_path)
+    monkeypatch.setattr("benchmarks._history.REPO_ROOT", tmp_path)
+    rows = [_history_row()]
+    _write_history("op_z", v5e(), 1, 1, "bf16", 0, rows)
+    files = list((tmp_path / "op_z").glob("*.json"))
+    record = json.loads(files[0].read_text())
+    assert record["kind"] == "compare"
