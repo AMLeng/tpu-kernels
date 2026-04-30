@@ -13,7 +13,7 @@ from __future__ import annotations
 import jax
 from jax.experimental import pallas as pl
 
-DEFAULT_BLOCK = (256, 256)
+DEFAULT_BLOCK = (512, 1024)
 
 
 def _scale_kernel(x_ref, o_ref):
