@@ -17,12 +17,13 @@ from tpu_kernels.ops.scale import scale_pallas
 
 pytestmark = [pytest.mark.tpu, pytest.mark.perf]
 
-# Regression floor against the current naive single-buffered kernel,
-# which plateaus at ~63% HBM BW across every sane (bm, bn) on v5e (see
-# bench_history/scale/). 0.60 leaves ~3pp headroom for run-to-run noise.
-# Raise this once a pipelined / multi-buffered variant lands and pushes
-# Current up.
-BW_UTIL_FLOOR = 0.60
+# Regression floor against the current Pallas kernel under timing="unroll"
+# (auto-sized k=32 amortizes host dispatch out of the measurement). The (bm,
+# bn) sweep clusters between 80-81% on v5e with (512, 1024) at ~80.9% (see
+# bench_history/scale/). 0.78 leaves ~3pp headroom for run-to-run noise.
+# Raise once timing="device" measurements put the floor higher, or once a
+# pipelined / multi-buffered variant lands and pushes Current up.
+BW_UTIL_FLOOR = 0.78
 
 
 def test_scale_pallas_hits_target_bw() -> None:

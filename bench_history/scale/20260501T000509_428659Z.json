@@ -1,0 +1,479 @@
+{
+  "op": "scale",
+  "kind": "sweep",
+  "timestamp": "20260501T000509_428659Z",
+  "git_sha": "402ebba99e1d3c9625ff1b11a14f7b00d455b763",
+  "hw": {
+    "bf16_flops": 197000000000000.0,
+    "f32_flops": 98000000000000.0,
+    "int8_ops": 393000000000000.0,
+    "hbm_bw": 819000000000.0,
+    "ici_bw_per_link": 200000000000.0,
+    "ici_links_per_chip": 4,
+    "num_chips": 1
+  },
+  "flops": 67108864,
+  "bytes": 268435456,
+  "flop_dtype": "bf16",
+  "config": {},
+  "sweep_axes": {
+    "bm": [
+      128,
+      256,
+      512,
+      1024,
+      2048
+    ],
+    "bn": [
+      128,
+      256,
+      512,
+      1024,
+      2048
+    ]
+  },
+  "skipped": [],
+  "errored": [
+    {
+      "config": {
+        "bm": 2048,
+        "bn": 2048
+      },
+      "error": "JaxRuntimeError('RESOURCE_EXHAUSTED: E1001: CompileTimeScopedVmemOom:\\nRan out of memory in memory space vmem while allocating on stack for %fn.1 = bf16[8192,8192]{1,0:T(8,128)(2,1)} custom-call(%args_0_.1), custom_call_target=\"tpu_custom_call\", operand_layout_constraints={bf16[8192,8192]{1,0}}, frontend_attributes={kernel_metadata={}}, metadata={op_name=\"jit(looped)/jit(fn)/pallas_call\" stack_frame_id=5}. Scoped allocation with size 32.00M and limit 16.00M exceeded scoped vmem limit by 16.00M. It should not be possible to run out of scoped vmem - \\nSee https://openxla.org/xla/errors/error_1001 for more details.')"
+    }
+  ],
+  "variants": {
+    "bm=1024,bn=512": {
+      "config": {
+        "bm": 1024,
+        "bn": 512
+      },
+      "median_s": 0.0004039902656245431,
+      "p99_s": 0.0004049063468971781,
+      "min_s": 0.000403132125029515,
+      "stdev_s": 5.152134276577348e-07,
+      "timing": "unroll",
+      "unroll": 32,
+      "cluster_mismatch": false,
+      "mfu": 0.0008432236144429519,
+      "bw_util": 0.8113067254957826,
+      "ici_util": 0.0,
+      "sol_pct": 0.8113067254957826,
+      "binds": "memory"
+    },
+    "bm=2048,bn=512": {
+      "config": {
+        "bm": 2048,
+        "bn": 512
+      },
+      "median_s": 0.0004042725938120384,
+      "p99_s": 0.0004050809778925668,
+      "min_s": 0.0004034537187180831,
+      "stdev_s": 5.263295852221343e-07,
+      "timing": "unroll",
+      "unroll": 32,
+      "cluster_mismatch": false,
+      "mfu": 0.0008426347400093077,
+      "bw_util": 0.8107401405706159,
+      "ici_util": 0.0,
+      "sol_pct": 0.8107401405706159,
+      "binds": "memory"
+    },
+    "bm=2048,bn=1024": {
+      "config": {
+        "bm": 2048,
+        "bn": 1024
+      },
+      "median_s": 0.0004051938593647719,
+      "p99_s": 0.00040714461893685437,
+      "min_s": 0.000404100875016411,
+      "stdev_s": 8.784076735761743e-07,
+      "timing": "unroll",
+      "unroll": 32,
+      "cluster_mismatch": false,
+      "mfu": 0.0008407188907397158,
+      "bw_util": 0.8088968081842441,
+      "ici_util": 0.0,
+      "sol_pct": 0.8088968081842441,
+      "binds": "memory"
+    },
+    "bm=512,bn=1024": {
+      "config": {
+        "bm": 512,
+        "bn": 1024
+      },
+      "median_s": 0.0004053076092986885,
+      "p99_s": 0.00040648217539910545,
+      "min_s": 0.00040473371871030395,
+      "stdev_s": 4.4803443865634214e-07,
+      "timing": "unroll",
+      "unroll": 32,
+      "cluster_mismatch": false,
+      "mfu": 0.00084048294225005,
+      "bw_util": 0.8086697905897917,
+      "ici_util": 0.0,
+      "sol_pct": 0.8086697905897917,
+      "binds": "memory"
+    },
+    "bm=1024,bn=1024": {
+      "config": {
+        "bm": 1024,
+        "bn": 1024
+      },
+      "median_s": 0.0004055663437156909,
+      "p99_s": 0.0004065685028797361,
+      "min_s": 0.0004048962186971039,
+      "stdev_s": 3.624539833115554e-07,
+      "timing": "unroll",
+      "unroll": 32,
+      "cluster_mismatch": false,
+      "mfu": 0.0008399467491772443,
+      "bw_util": 0.8081538929812802,
+      "ici_util": 0.0,
+      "sol_pct": 0.8081538929812802,
+      "binds": "memory"
+    },
+    "bm=512,bn=512": {
+      "config": {
+        "bm": 512,
+        "bn": 512
+      },
+      "median_s": 0.0004060557344018889,
+      "p99_s": 0.0004069718906180242,
+      "min_s": 0.0004051284063280036,
+      "stdev_s": 5.668344632051666e-07,
+      "timing": "unroll",
+      "unroll": 32,
+      "cluster_mismatch": false,
+      "mfu": 0.0008389344198807373,
+      "bw_util": 0.8071798813992931,
+      "ici_util": 0.0,
+      "sol_pct": 0.807179881399293,
+      "binds": "memory"
+    },
+    "bm=256,bn=1024": {
+      "config": {
+        "bm": 256,
+        "bn": 1024
+      },
+      "median_s": 0.0004063466875550148,
+      "p99_s": 0.00040713932188964465,
+      "min_s": 0.00040554399993197876,
+      "stdev_s": 6.197932430612004e-07,
+      "timing": "unroll",
+      "unroll": 32,
+      "cluster_mismatch": false,
+      "mfu": 0.0008383337244100819,
+      "bw_util": 0.8066019228756344,
+      "ici_util": 0.0,
+      "sol_pct": 0.8066019228756344,
+      "binds": "memory"
+    },
+    "bm=256,bn=2048": {
+      "config": {
+        "bm": 256,
+        "bn": 2048
+      },
+      "median_s": 0.00040753198436505045,
+      "p99_s": 0.0004084584187478413,
+      "min_s": 0.00040637150004840805,
+      "stdev_s": 9.115773828755315e-07,
+      "timing": "unroll",
+      "unroll": 32,
+      "cluster_mismatch": false,
+      "mfu": 0.0008358954512746942,
+      "bw_util": 0.8042559409089853,
+      "ici_util": 0.0,
+      "sol_pct": 0.8042559409089852,
+      "binds": "memory"
+    },
+    "bm=512,bn=2048": {
+      "config": {
+        "bm": 512,
+        "bn": 2048
+      },
+      "median_s": 0.0004076241718280471,
+      "p99_s": 0.000409092887011866,
+      "min_s": 0.0004067349686920352,
+      "stdev_s": 5.636263141738594e-07,
+      "timing": "unroll",
+      "unroll": 32,
+      "cluster_mismatch": false,
+      "mfu": 0.0008357064068403616,
+      "bw_util": 0.8040740520026922,
+      "ici_util": 0.0,
+      "sol_pct": 0.8040740520026922,
+      "binds": "memory"
+    },
+    "bm=1024,bn=2048": {
+      "config": {
+        "bm": 1024,
+        "bn": 2048
+      },
+      "median_s": 0.0004077158750419585,
+      "p99_s": 0.00040927814384872363,
+      "min_s": 0.0004062421561457086,
+      "stdev_s": 8.341701654307228e-07,
+      "timing": "unroll",
+      "unroll": 32,
+      "cluster_mismatch": false,
+      "mfu": 0.0008355184402487108,
+      "bw_util": 0.8038932001416168,
+      "ici_util": 0.0,
+      "sol_pct": 0.8038932001416167,
+      "binds": "memory"
+    },
+    "bm=128,bn=2048": {
+      "config": {
+        "bm": 128,
+        "bn": 2048
+      },
+      "median_s": 0.00040817198436116087,
+      "p99_s": 0.000409100809042684,
+      "min_s": 0.00040786118745472777,
+      "stdev_s": 2.843164275987993e-07,
+      "timing": "unroll",
+      "unroll": 32,
+      "cluster_mismatch": false,
+      "mfu": 0.0008345847952128827,
+      "bw_util": 0.8029948945393792,
+      "ici_util": 0.0,
+      "sol_pct": 0.8029948945393792,
+      "binds": "memory"
+    },
+    "bm=2048,bn=256": {
+      "config": {
+        "bm": 2048,
+        "bn": 256
+      },
+      "median_s": 0.00041284651564410524,
+      "p99_s": 0.0004233553721098815,
+      "min_s": 0.00040260774994749227,
+      "stdev_s": 1.0149073245193931e-05,
+      "timing": "unroll",
+      "unroll": 32,
+      "cluster_mismatch": false,
+      "mfu": 0.0008251350539999631,
+      "bw_util": 0.7939028358387924,
+      "ici_util": 0.0,
+      "sol_pct": 0.7939028358387924,
+      "binds": "memory"
+    },
+    "bm=1024,bn=256": {
+      "config": {
+        "bm": 1024,
+        "bn": 256
+      },
+      "median_s": 0.00042836792187017636,
+      "p99_s": 0.0004326437066936251,
+      "min_s": 0.0004238252812456267,
+      "stdev_s": 4.159517477440076e-06,
+      "timing": "unroll",
+      "unroll": 32,
+      "cluster_mismatch": false,
+      "mfu": 0.0007952372588789131,
+      "bw_util": 0.7651367032925317,
+      "ici_util": 0.0,
+      "sol_pct": 0.7651367032925317,
+      "binds": "memory"
+    },
+    "bm=128,bn=1024": {
+      "config": {
+        "bm": 128,
+        "bn": 1024
+      },
+      "median_s": 0.0004330833750145757,
+      "p99_s": 0.00043390375322019284,
+      "min_s": 0.00043211215620431176,
+      "stdev_s": 5.227675758883479e-07,
+      "timing": "unroll",
+      "unroll": 32,
+      "cluster_mismatch": false,
+      "mfu": 0.0007865786396631606,
+      "bw_util": 0.7568058218004524,
+      "ici_util": 0.0,
+      "sol_pct": 0.7568058218004524,
+      "binds": "memory"
+    },
+    "bm=256,bn=512": {
+      "config": {
+        "bm": 256,
+        "bn": 512
+      },
+      "median_s": 0.00045925493748200097,
+      "p99_s": 0.0004643097562461662,
+      "min_s": 0.0004543436875792395,
+      "stdev_s": 4.650420627868211e-06,
+      "timing": "unroll",
+      "unroll": 32,
+      "cluster_mismatch": false,
+      "mfu": 0.0007417538804208202,
+      "bw_util": 0.7136777262168575,
+      "ici_util": 0.0,
+      "sol_pct": 0.7136777262168575,
+      "binds": "memory"
+    },
+    "bm=512,bn=256": {
+      "config": {
+        "bm": 512,
+        "bn": 256
+      },
+      "median_s": 0.00046553399999993417,
+      "p99_s": 0.00047363309062006917,
+      "min_s": 0.00045754618747650966,
+      "stdev_s": 7.674493800278494e-06,
+      "timing": "unroll",
+      "unroll": 32,
+      "cluster_mismatch": false,
+      "mfu": 0.0007317491998001083,
+      "bw_util": 0.7040517331410078,
+      "ici_util": 0.0,
+      "sol_pct": 0.7040517331410077,
+      "binds": "memory"
+    },
+    "bm=2048,bn=128": {
+      "config": {
+        "bm": 2048,
+        "bn": 128
+      },
+      "median_s": 0.0004748483750063315,
+      "p99_s": 0.00047727716237091046,
+      "min_s": 0.0004724762187606757,
+      "stdev_s": 2.1041256456375342e-06,
+      "timing": "unroll",
+      "unroll": 32,
+      "cluster_mismatch": false,
+      "mfu": 0.0007173955938569932,
+      "bw_util": 0.6902414260797444,
+      "ici_util": 0.0,
+      "sol_pct": 0.6902414260797445,
+      "binds": "memory"
+    },
+    "bm=1024,bn=128": {
+      "config": {
+        "bm": 1024,
+        "bn": 128
+      },
+      "median_s": 0.0005047961875561668,
+      "p99_s": 0.0005121295491630917,
+      "min_s": 0.0004978043123173848,
+      "stdev_s": 6.404252293097833e-06,
+      "timing": "unroll",
+      "unroll": 16,
+      "cluster_mismatch": false,
+      "mfu": 0.0006748349935622128,
+      "bw_util": 0.6492917886776846,
+      "ici_util": 0.0,
+      "sol_pct": 0.6492917886776846,
+      "binds": "memory"
+    },
+    "bm=128,bn=512": {
+      "config": {
+        "bm": 128,
+        "bn": 512
+      },
+      "median_s": 0.0005950127186906684,
+      "p99_s": 0.0005963111317487346,
+      "min_s": 0.0005939974375905877,
+      "stdev_s": 6.056125979304097e-07,
+      "timing": "unroll",
+      "unroll": 16,
+      "cluster_mismatch": false,
+      "mfu": 0.000572515714839354,
+      "bw_util": 0.5508454008466556,
+      "ici_util": 0.0,
+      "sol_pct": 0.5508454008466556,
+      "binds": "memory"
+    },
+    "bm=256,bn=256": {
+      "config": {
+        "bm": 256,
+        "bn": 256
+      },
+      "median_s": 0.0006185333750181599,
+      "p99_s": 0.0006257878438077569,
+      "min_s": 0.0006126774374024535,
+      "stdev_s": 5.46144221171412e-06,
+      "timing": "unroll",
+      "unroll": 16,
+      "cluster_mismatch": false,
+      "mfu": 0.0005507449488391697,
+      "bw_util": 0.5298986809343904,
+      "ici_util": 0.0,
+      "sol_pct": 0.5298986809343904,
+      "binds": "memory"
+    },
+    "bm=512,bn=128": {
+      "config": {
+        "bm": 512,
+        "bn": 128
+      },
+      "median_s": 0.0006513686563494048,
+      "p99_s": 0.0006564491628569158,
+      "min_s": 0.0006469893125995441,
+      "stdev_s": 3.486437935517565e-06,
+      "timing": "unroll",
+      "unroll": 16,
+      "cluster_mismatch": false,
+      "mfu": 0.0005229820757555197,
+      "bw_util": 0.5031866614106831,
+      "ici_util": 0.0,
+      "sol_pct": 0.5031866614106831,
+      "binds": "memory"
+    },
+    "bm=128,bn=256": {
+      "config": {
+        "bm": 128,
+        "bn": 256
+      },
+      "median_s": 0.0008428183436990366,
+      "p99_s": 0.0008465929247904568,
+      "min_s": 0.0008411661876834842,
+      "stdev_s": 1.1328974189685857e-06,
+      "timing": "unroll",
+      "unroll": 16,
+      "cluster_mismatch": false,
+      "mfu": 0.00040418452508354536,
+      "bw_util": 0.38888572132580435,
+      "ici_util": 0.0,
+      "sol_pct": 0.38888572132580435,
+      "binds": "memory"
+    },
+    "bm=256,bn=128": {
+      "config": {
+        "bm": 256,
+        "bn": 128
+      },
+      "median_s": 0.0008575458124369106,
+      "p99_s": 0.000868969857058346,
+      "min_s": 0.0008455098748072487,
+      "stdev_s": 1.1205293406352442e-05,
+      "timing": "unroll",
+      "unroll": 16,
+      "cluster_mismatch": false,
+      "mfu": 0.0003972430709114532,
+      "bw_util": 0.3822070083983212,
+      "ici_util": 0.0,
+      "sol_pct": 0.3822070083983212,
+      "binds": "memory"
+    },
+    "bm=128,bn=128": {
+      "config": {
+        "bm": 128,
+        "bn": 128
+      },
+      "median_s": 0.0011968586247803614,
+      "p99_s": 0.0012105111251185007,
+      "min_s": 0.0011830386251858727,
+      "stdev_s": 1.2802289222507267e-05,
+      "timing": "unroll",
+      "unroll": 8,
+      "cluster_mismatch": false,
+      "mfu": 0.00028462353441469307,
+      "bw_util": 0.27385023824026633,
+      "ici_util": 0.0,
+      "sol_pct": 0.27385023824026633,
+      "binds": "memory"
+    }
+  }
+}
