@@ -107,15 +107,15 @@ Prints a table like:
 
 ```
 === scale (1 chip) ===
-  flops=6.711e+07  bytes=5.369e+08  intensity=0.1 F/B
+  flops=6.711e+07  bytes=2.684e+08  intensity=0.2 F/B
   ridge point (peak_flops/peak_bw) = 240.5 F/B  →  memory-bound
 
   variant                med(ms)   p99(ms)    MFU%     BW%    binds    SoL%
   -------------------------------------------------------------------------
-  xla                      0.840     0.870    0.0%   80.0%   memory   80.0%
-  pallas_256x256           0.760     0.790    0.0%   88.4%   memory   88.4%
+  xla                      0.412     0.414    0.0%   79.4%   memory   79.4%
+  pallas                   0.405     0.406    0.0%   80.9%   memory   80.9%
 
-  wrote bench_history/scale/20260429T173000Z.json
+  wrote bench_history/scale/20260501T120000Z.json
 ```
 
 The numbers and JSON record are tagged with the current git SHA, so trend
