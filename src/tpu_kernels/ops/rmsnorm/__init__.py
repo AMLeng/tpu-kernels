@@ -6,6 +6,7 @@ reference is numerically stable for bf16.
 """
 
 from tpu_kernels.ops.rmsnorm.naive import rmsnorm as rmsnorm_naive
+from tpu_kernels.ops.rmsnorm.pallas import rmsnorm as rmsnorm_pallas
 from tpu_kernels.ops.rmsnorm.xla import rmsnorm as rmsnorm_xla
 
-__all__ = ["rmsnorm_naive", "rmsnorm_xla"]
+__all__ = ["rmsnorm_naive", "rmsnorm_pallas", "rmsnorm_xla"]

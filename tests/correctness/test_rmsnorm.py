@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from functools import partial
 from typing import Any
 
 import jax
@@ -10,10 +11,14 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from tpu_kernels.ops.rmsnorm import rmsnorm_naive, rmsnorm_xla
+from tpu_kernels.ops.rmsnorm import rmsnorm_naive, rmsnorm_pallas, rmsnorm_xla
 
 VARIANTS: dict[str, Callable[[jax.Array, jax.Array], jax.Array]] = {
     "xla": rmsnorm_xla,
+    # Two block sizes to cover both the single-block (grid of 1) and the
+    # multi-block (grid of >1) lowering paths. Pallas runs on CPU via interpret=True.
+    "pallas_b4": partial(rmsnorm_pallas, block_size=4, interpret=True),
+    "pallas_b32": partial(rmsnorm_pallas, block_size=32, interpret=True),
 }
 
 # bf16 is the project default working dtype (CLAUDE.md). It's also the only
@@ -28,7 +33,8 @@ DTYPES: dict[str, tuple[Any, dict[str, float]]] = {
 
 
 def _inputs(dtype: Any) -> tuple[jax.Array, jax.Array]:
-    x = jax.random.normal(jax.random.key(0), (4, 256), dtype=dtype)
+    # Leading dim is 32 so the pallas variant can sweep block_size ∈ {4, 32}.
+    x = jax.random.normal(jax.random.key(0), (32, 256), dtype=dtype)
     scale = jax.random.normal(jax.random.key(1), (256,), dtype=dtype)
     return x, scale
 

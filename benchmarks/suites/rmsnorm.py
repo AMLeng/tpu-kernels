@@ -6,6 +6,9 @@ With xprof trace: `... --profile-dir /tmp/rmsnorm_trace`
     Then: `uv run xprof /tmp/rmsnorm_trace` (full UI on :8791), or drag
     `<dir>/plugins/profile/*/*.trace.json.gz` into ui.perfetto.dev.
 
+Pallas block-size sweep (1-D — hidden dim is always loaded in full):
+    `... --sweep-block 8,16,32,64,128`
+
 Memory-bound. The interesting knob is ``--dtype`` — the f32-accumulator
 inside `naive` is unconditional, but the input/output dtype changes how
 many bytes cross HBM, which moves BW% directly.
@@ -20,7 +23,14 @@ import jax.numpy as jnp
 
 from benchmarks.compare import compare
 from benchmarks.roofline import v5e
-from tpu_kernels.ops.rmsnorm import rmsnorm_xla
+from benchmarks.sweep import sweep
+from tpu_kernels.ops.rmsnorm import rmsnorm_pallas, rmsnorm_xla
+from tpu_kernels.ops.rmsnorm.pallas import DEFAULT_BLOCK
+
+
+def _csv_ints(s: str) -> tuple[int, ...]:
+    """Parse ``"8,16,32"`` → ``(8, 16, 32)``. argparse hook for sweep axis."""
+    return tuple(int(x) for x in s.split(","))
 
 
 def _make_parser() -> argparse.ArgumentParser:
@@ -29,6 +39,19 @@ def _make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--bs", type=int, default=4096, help="leading (batch * seq) dim")
     parser.add_argument("--hidden", type=int, default=4096)
+    parser.add_argument(
+        "--block",
+        type=int,
+        default=DEFAULT_BLOCK,
+        help="Pallas row-tile (bm). Must divide --bs. Ignored when --sweep-block is set.",
+    )
+    parser.add_argument(
+        "--sweep-block",
+        type=_csv_ints,
+        default=None,
+        metavar="BM_LIST",
+        help="Sweep over block_size values. Example: --sweep-block 8,16,32,64,128",
+    )
     parser.add_argument("--dtype", choices=["bf16", "f32"], default="bf16")
     parser.add_argument("--dump-hlo", action="store_true")
     parser.add_argument("--profile-dir", default=None)
@@ -55,9 +78,44 @@ def main() -> None:
     # Read x + read scale + write y. Scale is small but we count it for honesty.
     nbytes = 2 * bs * h * bytes_per_elem + h * bytes_per_elem
 
+    if args.sweep_block is not None:
+        bms = args.sweep_block
+
+        def variant_factory(*, bm: int) -> jax.stages.Wrapped:
+            @jax.jit
+            def fn(y: jax.Array, s: jax.Array) -> jax.Array:
+                return rmsnorm_pallas(y, s, block_size=bm)
+
+            return fn
+
+        def is_valid(*, bm: int) -> bool:
+            # Pre-emptive divisibility filter so the sweep doesn't crash inside
+            # `rmsnorm_pallas` for shapes that obviously won't tile.
+            return bs % bm == 0
+
+        sweep(
+            op="rmsnorm",
+            variant_factory=variant_factory,
+            axes={"bm": list(bms)},
+            args=(x, scale),
+            flops=flops,
+            nbytes=nbytes,
+            hw=v5e(),
+            flop_dtype=args.dtype,
+            is_valid=is_valid,
+            timing=args.timing,
+        )
+        return
+
+    block_size = args.block
+
+    @jax.jit
+    def pallas_fn(y: jax.Array, s: jax.Array) -> jax.Array:
+        return rmsnorm_pallas(y, s, block_size=block_size)
+
     compare(
         op="rmsnorm",
-        variants={"xla": rmsnorm_xla},
+        variants={"xla": rmsnorm_xla, "pallas": pallas_fn},
         args=(x, scale),
         flops=flops,
         nbytes=nbytes,
@@ -66,7 +124,7 @@ def main() -> None:
         dump_hlo=args.dump_hlo,
         profile_dir=args.profile_dir,
         timing=args.timing,
-        config={"bs": bs, "hidden": h, "dtype": args.dtype},
+        config={"bs": bs, "hidden": h, "dtype": args.dtype, "block_size": block_size},
     )
 
 
