@@ -23,14 +23,26 @@ from benchmarks.roofline import v5e
 from tpu_kernels.ops.rmsnorm import rmsnorm_xla
 
 
-def main() -> None:
+def _make_parser() -> argparse.ArgumentParser:
+    """Build the suite's CLI parser. Factored so tests can pin defaults
+    against bench() / kernel without launching the suite."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--bs", type=int, default=4096, help="leading (batch * seq) dim")
     parser.add_argument("--hidden", type=int, default=4096)
     parser.add_argument("--dtype", choices=["bf16", "f32"], default="bf16")
     parser.add_argument("--dump-hlo", action="store_true")
     parser.add_argument("--profile-dir", default=None)
-    args = parser.parse_args()
+    parser.add_argument(
+        "--timing",
+        choices=["unroll", "device"],
+        default="unroll",
+        help="Timing mode forwarded to bench(); device-mode is TPU-only.",
+    )
+    return parser
+
+
+def main() -> None:
+    args = _make_parser().parse_args()
 
     dtype = jnp.bfloat16 if args.dtype == "bf16" else jnp.float32
     bytes_per_elem = jnp.dtype(dtype).itemsize
@@ -53,6 +65,7 @@ def main() -> None:
         flop_dtype=args.dtype,
         dump_hlo=args.dump_hlo,
         profile_dir=args.profile_dir,
+        timing=args.timing,
         config={"bs": bs, "hidden": h, "dtype": args.dtype},
     )
 

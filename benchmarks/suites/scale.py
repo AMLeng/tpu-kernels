@@ -60,6 +60,12 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dtype", choices=["bf16", "f32"], default="bf16")
     parser.add_argument("--dump-hlo", action="store_true")
     parser.add_argument("--profile-dir", default=None)
+    parser.add_argument(
+        "--timing",
+        choices=["unroll", "device"],
+        default="unroll",
+        help="Timing mode forwarded to bench(); device-mode is TPU-only.",
+    )
     return parser
 
 
@@ -100,6 +106,7 @@ def main() -> None:
             hw=v5e(),
             flop_dtype=args.dtype,
             is_valid=is_valid,
+            timing=args.timing,
         )
         return
 
@@ -119,6 +126,7 @@ def main() -> None:
         flop_dtype=args.dtype,
         dump_hlo=args.dump_hlo,
         profile_dir=args.profile_dir,
+        timing=args.timing,
         config={"block_shape": list(block_shape)},
     )
 

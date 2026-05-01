@@ -26,7 +26,7 @@ import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 import jax
 
@@ -83,6 +83,7 @@ def compare(
     iters: int = 20,
     dump_hlo: bool = False,
     profile_dir: str | None = None,
+    timing: Literal["unroll", "device"] = "unroll",
     write_history: bool = True,
     config: dict[str, Any] | None = None,
 ) -> dict[str, Roofline]:
@@ -125,6 +126,7 @@ def compare(
             warmup=warmup,
             iters=iters,
             profile_dir=profile_dir,
+            timing=timing,
         )
         roof = analyze(
             flops=flops,

@@ -15,6 +15,7 @@ import subprocess
 import warnings
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from benchmarks._history import git_sha
@@ -224,6 +225,67 @@ def test_write_history_config_defaults_to_empty_dict(
     files = list((tmp_path / "op_y").glob("*.json"))
     record = json.loads(files[0].read_text())
     assert record["config"] == {}
+
+
+def test_compare_forwards_timing_kwarg_to_bench(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``compare(timing="device")`` must reach ``bench(...)`` unchanged.
+
+    Caller-side regression: forgetting to forward ``timing`` would silently
+    keep wallclock-amortized numbers, undoing phase 2.
+    """
+    captured: list[str] = []
+
+    def fake_bench(*, timing: str = "unroll", **_kwargs: Any) -> BenchResult:
+        captured.append(timing)
+        return BenchResult(name="x", times_s=[1e-3], warmup_iters=1, timed_iters=1)
+
+    monkeypatch.setattr("benchmarks.compare.bench", fake_bench)
+    import jax
+    import jax.numpy as jnp
+    from benchmarks.compare import compare
+
+    @jax.jit
+    def f(x: jax.Array) -> jax.Array:
+        return x
+
+    compare(
+        op="op",
+        variants={"v": f},
+        args=(jnp.zeros(1),),
+        flops=1,
+        nbytes=1,
+        timing="device",
+        write_history=False,
+    )
+    assert captured == ["device"]
+
+
+def test_compare_defaults_timing_to_unroll(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No ``timing`` arg → bench gets ``timing="unroll"`` (the bench default)."""
+    captured: list[str] = []
+
+    def fake_bench(*, timing: str = "unroll", **_kwargs: Any) -> BenchResult:
+        captured.append(timing)
+        return BenchResult(name="x", times_s=[1e-3], warmup_iters=1, timed_iters=1)
+
+    monkeypatch.setattr("benchmarks.compare.bench", fake_bench)
+    import jax
+    import jax.numpy as jnp
+    from benchmarks.compare import compare
+
+    @jax.jit
+    def f(x: jax.Array) -> jax.Array:
+        return x
+
+    compare(
+        op="op",
+        variants={"v": f},
+        args=(jnp.zeros(1),),
+        flops=1,
+        nbytes=1,
+        write_history=False,
+    )
+    assert captured == ["unroll"]
 
 
 def test_write_history_records_unroll_and_timing_per_variant(

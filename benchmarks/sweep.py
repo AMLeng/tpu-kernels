@@ -27,7 +27,7 @@ import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 import jax
 
@@ -84,6 +84,7 @@ def sweep(
     is_valid: Callable[..., bool] | None = None,
     warmup: int = 5,
     iters: int = 20,
+    timing: Literal["unroll", "device"] = "unroll",
     write_history: bool = True,
 ) -> dict[str, Roofline]:
     """Bench ``variant_factory(**config)`` for every config in ``product(axes)``.
@@ -127,7 +128,14 @@ def sweep(
         name = _config_name(cfg)
         try:
             fn = variant_factory(**cfg)
-            br = bench(name=f"{op}::{name}", fn=fn, args=args, warmup=warmup, iters=iters)
+            br = bench(
+                name=f"{op}::{name}",
+                fn=fn,
+                args=args,
+                warmup=warmup,
+                iters=iters,
+                timing=timing,
+            )
             roof = analyze(
                 flops=flops,
                 nbytes=nbytes,

@@ -197,6 +197,34 @@ def test_sweep_records_unroll_and_timing_per_variant(
         assert entry["cluster_mismatch"] is False
 
 
+def test_sweep_forwards_timing_kwarg_to_bench(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``sweep(timing="device")`` reaches ``bench(...)`` for every config."""
+    _setup_history(tmp_path, monkeypatch)
+    captured: list[str] = []
+
+    def fake_bench(*, timing: str = "unroll", **_kwargs: Any) -> BenchResult:
+        captured.append(timing)
+        return BenchResult(name="x", times_s=[1e-3], warmup_iters=1, timed_iters=1)
+
+    monkeypatch.setattr("benchmarks.sweep.bench", fake_bench)
+    sweep(
+        op="op_z",
+        variant_factory=_identity_factory,
+        axes={"a": [1, 2]},
+        args=(_x(),),
+        flops=1,
+        nbytes=1,
+        hw=v5e(),
+        timing="device",
+        warmup=0,
+        iters=1,
+        write_history=False,
+    )
+    assert captured == ["device", "device"]
+
+
 def test_skipped_and_errored_configs_persist_in_history(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -253,6 +281,7 @@ def test_table_marks_winner_and_sorts_by_sol_desc(
         warmup: int = 5,
         iters: int = 20,
         profile_dir: str | None = None,
+        **_kw: Any,  # tolerate timing= and any future bench kwargs
     ) -> BenchResult:
         t = scripted_times[name]
         return BenchResult(name=name, times_s=[t, t], warmup_iters=1, timed_iters=2)
