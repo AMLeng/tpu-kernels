@@ -17,13 +17,13 @@ from tpu_kernels.ops.scale import scale_pallas
 
 pytestmark = [pytest.mark.tpu, pytest.mark.perf]
 
-# Regression floor against the current Pallas kernel under timing="unroll"
-# (auto-sized k=32 amortizes host dispatch out of the measurement). The (bm,
-# bn) sweep clusters between 80-81% on v5e with (512, 1024) at ~80.9% (see
-# bench_history/scale/). 0.78 leaves ~3pp headroom for run-to-run noise.
-# Raise once timing="device" measurements put the floor higher, or once a
-# pipelined / multi-buffered variant lands and pushes Current up.
-BW_UTIL_FLOOR = 0.78
+# Regression floor against the current Pallas kernel under timing="device"
+# (kernel clock read directly from the TPU XPlane). The (bm, bn) sweep
+# clusters between 81-82% on v5e with (512, 1024) at ~81.6% (see
+# bench_history/scale/). Floor pinned at the target — both 0.80 — so a
+# below-floor reading is also a missed target. Device timing's stdev is
+# roughly half of unroll's, so 1.6pp of headroom against current is plenty.
+BW_UTIL_FLOOR = 0.80
 
 
 def test_scale_pallas_hits_target_bw() -> None:
@@ -36,7 +36,7 @@ def test_scale_pallas_hits_target_bw() -> None:
     def fn(y: jax.Array) -> jax.Array:
         return scale_pallas(y, block_shape=(512, 1024))
 
-    result = bench("scale::pallas_512x1024", fn, args=(x,))
+    result = bench("scale::pallas_512x1024", fn, args=(x,), timing="device")
     roof = analyze(
         flops=m * n,
         nbytes=2 * m * n * bytes_per_elem,  # read + write
