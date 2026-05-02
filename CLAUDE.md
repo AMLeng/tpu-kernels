@@ -93,6 +93,18 @@ Use `jax.random.normal(jax.random.key(0), shape, dtype)` for reproducible
 inputs. **Avoid `jnp.zeros` / `jnp.ones`** — XLA can constant-fold them and
 make a kernel look faster than it is.
 
+**Size inputs to ≥4× v5e VMEM (32 MiB → ≥128 MiB).** This is what
+actually defends per-call BW% accounting under unroll mode. Smaller
+inputs fit on chip; XLA can keep intermediates in VMEM across chained
+calls, so the program crosses HBM once for k calls and per-call BW%
+inflates by ~k. The unroll harness wraps chained values in
+`jax.lax.optimization_barrier` to block math fusion (e.g. `(((x+1)+1)+1)`
+collapsing to `x+3`), but the barrier doesn't force materialization
+through HBM — if the working set fits in VMEM the same accounting bug
+still happens. Sane input sizing is the only mechanism that prevents
+it. Suite-default tests (`tests/test_*_suite.py`) pin each suite's
+no-flag shape against this floor.
+
 ## Tests
 
 - `tests/correctness/` — `allclose` vs `naive`. Pallas paths use

@@ -157,12 +157,35 @@ def sweep(
         op, hw, flops, nbytes, axis_names, rows, skipped_configs, errored, flop_dtype
     )
 
+    _reject_unphysical_sol(rows)
+
     if write_history:
         _write_sweep_history(
             op, hw, flops, nbytes, flop_dtype, axes, rows, skipped_configs, errored
         )
 
     return {name: roof for _, name, _, roof in rows}
+
+
+def _reject_unphysical_sol(rows: list[SweepRow]) -> None:
+    """Raise if any swept config reports SoL > 100%.
+
+    Mirror of ``benchmarks.compare._reject_unphysical_sol``. The two share
+    the same diagnostic but diverge in the row tuple shape, so duplicating
+    keeps the type-check tight at each callsite. SoL > 1 is unphysical;
+    see the compare-side helper for the diagnostic prose.
+    """
+    bad = [(name, roof.sol_pct) for _, name, _, roof in rows if roof.sol_pct > 1.0]
+    if not bad:
+        return
+    details = ", ".join(f"{name} {pct * 100:.1f}%" for name, pct in bad)
+    raise RuntimeError(
+        f"SoL > 100% is unphysical — config(s): {details}. Likely causes: "
+        "inputs fit in VMEM and unroll-mode chained calls let XLA pipeline "
+        "tiles across them (re-run with timing='device' or grow inputs to "
+        ">=4x VMEM); a wrong per-chip peak in benchmarks/roofline.py; or a "
+        "mis-counted flops/nbytes in the suite."
+    )
 
 
 def _config_name(cfg: dict[str, Any]) -> str:

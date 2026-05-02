@@ -141,10 +141,36 @@ def compare(
 
     _print_table(op, hw, flops, nbytes, ici_bytes, bench_results, flop_dtype)
 
+    _reject_unphysical_sol(bench_results)
+
     if write_history:
         _write_history(op, hw, flops, nbytes, flop_dtype, ici_bytes, bench_results, config)
 
     return results
+
+
+def _reject_unphysical_sol(bench_results: list[BenchRow]) -> None:
+    """Raise if any variant reports SoL > 100%.
+
+    SoL > 1 means the kernel ran faster than the roofline allows, which is
+    physically impossible. The usual suspects: inputs fit in VMEM so unroll
+    mode pipelined tiles across chained calls (run with ``--timing device``
+    or scale the inputs to several times VMEM); the per-chip peak constants
+    in ``roofline.py`` are wrong; or flops/nbytes counted by the suite
+    don't match what the kernel actually moves. We raise here rather than
+    emit a misleading bench-history record.
+    """
+    bad = [(name, roof.sol_pct) for name, _, roof in bench_results if roof.sol_pct > 1.0]
+    if not bad:
+        return
+    details = ", ".join(f"{name} {pct * 100:.1f}%" for name, pct in bad)
+    raise RuntimeError(
+        f"SoL > 100% is unphysical — variant(s): {details}. Likely causes: "
+        "inputs fit in VMEM and unroll-mode chained calls let XLA pipeline "
+        "tiles across them (re-run with timing='device' or grow inputs to "
+        ">=4x VMEM); a wrong per-chip peak in benchmarks/roofline.py; or a "
+        "mis-counted flops/nbytes in the suite."
+    )
 
 
 def _is_jitted(fn: Callable[..., Any]) -> bool:

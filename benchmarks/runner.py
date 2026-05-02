@@ -209,12 +209,25 @@ def _build_unrolled(
     k: int,
     chain: ChainSpec,
 ) -> Callable[..., Any]:
-    """Single jit that calls ``fn`` k times, threading prior output via chain."""
+    """Single jit that calls ``fn`` k times, threading prior output via chain.
+
+    Each chained value passes through ``jax.lax.optimization_barrier`` before
+    being fed back. Without the barrier XLA folds chains like
+    ``(((x+1)+1)+1)+1`` into ``x+k``, collapsing k calls' worth of work
+    into one op — per-call wallclock then reads as 1/k of the true cost.
+
+    The barrier blocks *math* fusion only; it does not force materialization
+    through HBM. If the working set fits in VMEM, XLA can still keep
+    intermediates on chip across chained calls and the same per-call
+    HBM-accounting bug surfaces. Suites must size inputs to several times
+    VMEM — see CLAUDE.md / Bench inputs.
+    """
 
     @jax.jit
     def looped(*args: Any, **kwargs: Any) -> Any:
         out = fn(*args, **kwargs)
         for _ in range(k - 1):
+            out = jax.lax.optimization_barrier(out)
             args, kwargs = _apply_chain(out, args, kwargs, chain)
             out = fn(*args, **kwargs)
         return out

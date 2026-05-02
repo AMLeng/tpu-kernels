@@ -131,6 +131,43 @@ def test_build_unrolled_k_one_is_single_call() -> None:
     assert float(unrolled(jnp.array(5.0))) == 6.0
 
 
+def test_build_unrolled_does_not_collapse_chained_calls_in_compiled_hlo() -> None:
+    """XLA must not fold k chained calls into fewer ops at compile time.
+
+    Without an optimization barrier between chained calls, a chain like
+    ``(((x+1)+1)+1)+1`` collapses to ``x+4`` in optimized HLO — one add op
+    for k=4 calls. The unroll harness divides total wallclock by k to get
+    per-call time, so a folded program reports per-call time as 1/k of the
+    true single-call cost. Memory-bound kernels see this as BW% > 100%.
+
+    Note this only pins the math-fusion case. The barrier doesn't force
+    materialization through HBM, so an op whose working set fits in VMEM
+    can still surface the same per-call accounting bug even with the
+    barrier in place. The complementary mitigation is sizing inputs to
+    several times VMEM; the suite-default tests in tests/test_*_suite.py
+    pin that floor.
+    """
+
+    @jax.jit
+    def add_one(x: jax.Array) -> jax.Array:
+        return x + 1.0
+
+    x = jnp.zeros((1024,), dtype=jnp.float32)
+    k = 4
+    unrolled = _build_unrolled(add_one, k=k, chain=0)
+    hlo = jax.jit(unrolled).lower(x).compile().as_text()
+    assert hlo is not None  # CPU backend returns text; defensive for pyright
+    # Compiled HLO uses ``add(...)`` for f32 element-wise add. With the
+    # optimization barrier between chained calls, each call's add survives
+    # as a distinct op — at least k of them remain.
+    add_ops = hlo.count(" add(")
+    assert add_ops >= k, (
+        f"compiled HLO has {add_ops} ' add(' op(s); expected >= {k} for "
+        f"k={k} chained add_one calls. XLA folded the chain — per-call "
+        "timing under unroll mode would be inflated by ~k times."
+    )
+
+
 # ---- bench() entry-level validation -------------------------------------
 
 

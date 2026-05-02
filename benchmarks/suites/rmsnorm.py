@@ -37,8 +37,11 @@ def _make_parser() -> argparse.ArgumentParser:
     """Build the suite's CLI parser. Factored so tests can pin defaults
     against bench() / kernel without launching the suite."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--bs", type=int, default=4096, help="leading (batch * seq) dim")
-    parser.add_argument("--hidden", type=int, default=4096)
+    # Default shape gives 128 MiB of bf16 input — 4x v5e VMEM, the floor
+    # CLAUDE.md sets so a chained-call XLA pipeline can't keep the working
+    # set on chip and inflate per-call BW% under unroll mode.
+    parser.add_argument("--bs", type=int, default=8192, help="leading (batch * seq) dim")
+    parser.add_argument("--hidden", type=int, default=8192)
     parser.add_argument(
         "--block",
         type=int,

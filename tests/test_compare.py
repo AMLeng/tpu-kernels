@@ -331,3 +331,77 @@ def test_write_history_stamps_kind_compare(tmp_path: Path, monkeypatch: pytest.M
     files = list((tmp_path / "op_z").glob("*.json"))
     record = json.loads(files[0].read_text())
     assert record["kind"] == "compare"
+
+
+def test_compare_raises_when_variant_reports_unphysical_sol(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SoL > 100% is unphysical — compare() must surface it as an error.
+
+    A kernel can't run faster than its hardware roofline. The most common
+    cause is unroll-mode chained calls letting XLA pipeline tiles across
+    them when the input fits in VMEM (rmsnorm at small shapes was the
+    motivating bug). We raise rather than emit a misleading bench-history
+    record; the table still prints first so the operator sees the numbers.
+    """
+    _setup_history(tmp_path, monkeypatch)
+
+    def fake_bench(**_kwargs: Any) -> BenchResult:
+        # nbytes=1e12, seconds=1e-9 → modeled BW = 1e21 B/s, well above peak.
+        return BenchResult(name="x", times_s=[1e-9], warmup_iters=1, timed_iters=1)
+
+    monkeypatch.setattr("benchmarks.compare.bench", fake_bench)
+    import jax
+    import jax.numpy as jnp
+    from benchmarks.compare import compare
+
+    @jax.jit
+    def f(x: jax.Array) -> jax.Array:
+        return x
+
+    with pytest.raises(RuntimeError, match=r"(?i)sol.*100%|100%.*unphysical"):
+        compare(
+            op="op",
+            variants={"v": f},
+            args=(jnp.zeros(1),),
+            flops=1,
+            nbytes=10**12,
+        )
+    # And: history must NOT have been written when the run is unphysical.
+    assert not list(tmp_path.glob("op/*.json"))
+
+
+def test_compare_silent_for_sol_at_or_below_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Boundary: SoL == 1.0 is on the roofline, not above it. No raise."""
+
+    def fake_bench(**_kwargs: Any) -> BenchResult:
+        # seconds chosen so modeled BW exactly matches v5e total HBM peak.
+        return BenchResult(
+            name="x",
+            times_s=[1.0 / v5e().total_hbm_bw],
+            warmup_iters=1,
+            timed_iters=1,
+        )
+
+    monkeypatch.setattr("benchmarks.compare.bench", fake_bench)
+    import jax
+    import jax.numpy as jnp
+    from benchmarks.compare import compare
+
+    @jax.jit
+    def f(x: jax.Array) -> jax.Array:
+        return x
+
+    compare(
+        op="op",
+        variants={"v": f},
+        args=(jnp.zeros(1),),
+        flops=1,
+        nbytes=1,
+        write_history=False,
+    )
+
+
+def _setup_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("benchmarks._history.HISTORY_DIR", tmp_path)
+    monkeypatch.setattr("benchmarks._history.REPO_ROOT", tmp_path)

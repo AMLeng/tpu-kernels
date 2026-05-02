@@ -400,6 +400,39 @@ def test_sweep_warns_on_multi_chip_hw(tmp_path: Path, monkeypatch: pytest.Monkey
         )
 
 
+def test_sweep_raises_when_any_config_reports_unphysical_sol(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SoL > 100% on any swept config must surface as an error.
+
+    Mirror of the compare-side guard. Catches the unroll-mode tile-pipelining
+    artifact that motivated the fix (rmsnorm at small shapes), and any
+    future case where the roofline constants or flops/nbytes are wrong.
+    Sweep still prints the leaderboard (already sorted by SoL desc) before
+    raising, so the operator sees which configs went unphysical.
+    """
+    _setup_history(tmp_path, monkeypatch)
+
+    def fake_bench(**_kwargs: Any) -> BenchResult:
+        return BenchResult(name="x", times_s=[1e-9], warmup_iters=1, timed_iters=1)
+
+    monkeypatch.setattr("benchmarks.sweep.bench", fake_bench)
+    with pytest.raises(RuntimeError, match=r"(?i)sol.*100%|100%.*unphysical"):
+        sweep(
+            op="op_unphys",
+            variant_factory=_identity_factory,
+            axes={"a": [1, 2]},
+            args=(_x(),),
+            flops=1,
+            nbytes=10**12,
+            hw=v5e(),
+            warmup=0,
+            iters=1,
+        )
+    # History must NOT have been written when the run is unphysical.
+    assert not list((tmp_path / "op_unphys").glob("*.json"))
+
+
 def test_config_name_encoding_preserves_axis_insertion_order() -> None:
     """The variant name is a stable string key. Insertion order matters
     because suites pass axes as a dict and the user's chosen order is the
