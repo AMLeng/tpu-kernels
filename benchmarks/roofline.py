@@ -14,6 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+import jax
+
 FlopDtype = Literal["bf16", "f32", "int8"]
 
 # v5e per-chip peaks. Sources: Google Cloud TPU v5e announcement + jax-ml/maxtext
@@ -33,8 +35,15 @@ V5E_ICI_LINKS_PER_CHIP = 4  # 2D torus: 2 links per axis, 2 axes
 
 @dataclass(frozen=True)
 class HardwarePeak:
-    """Per-chip peak rates for a TPU generation, scaled by `num_chips`."""
+    """Per-chip peak rates for a TPU generation, scaled by `num_chips`.
 
+    ``kind`` tags the generation ("v5e" today; "v5p", "v6e", etc. as the
+    project expands). ``check_supported_hardware`` reads it to refuse a
+    HardwarePeak that doesn't match the constants this project's
+    kernels were tuned for.
+    """
+
+    kind: str
     bf16_flops: float
     f32_flops: float
     int8_ops: float
@@ -67,6 +76,7 @@ class HardwarePeak:
 
 def v5e(num_chips: int = 1) -> HardwarePeak:
     return HardwarePeak(
+        kind="v5e",
         bf16_flops=V5E_BF16_PEAK_FLOPS,
         f32_flops=V5E_F32_PEAK_FLOPS,
         int8_ops=V5E_INT8_PEAK_OPS,
@@ -75,6 +85,49 @@ def v5e(num_chips: int = 1) -> HardwarePeak:
         ici_links_per_chip=V5E_ICI_LINKS_PER_CHIP,
         num_chips=num_chips,
     )
+
+
+# JAX reports each TPU generation under a distinct ``device_kind`` string;
+# v5e (the inference variant, hence "lite") is "TPU v5 lite". Mapping lives
+# here so a future v5p/v6e port adds an entry rather than threading a new
+# string through the harness.
+_DEVICE_KIND_BY_HW_KIND: dict[str, str] = {
+    "v5e": "TPU v5 lite",
+}
+
+
+def check_supported_hardware(hw: HardwarePeak) -> None:
+    """Raise ``NotImplementedError`` if ``hw`` isn't supported, or if the
+    host TPU disagrees with what the suite is modelling.
+
+    The roofline constants in this module are v5e-specific. A
+    ``HardwarePeak`` with another ``kind`` would route different-generation
+    numbers through the math and silently produce wrong BW%/MFU%. Worse,
+    pointing a v5e suite at a v4 / v5p / v6e host would compile and run
+    cleanly while every reported metric is a lie. We refuse both up front
+    so the operator re-points the suite at the right hardware before
+    they read fictional numbers.
+
+    On CPU / GPU runners (interpret-mode tests, correctness checks) the
+    device-kind cross-check is skipped — there's no TPU to disagree with;
+    the kind field is the only signal that matters.
+    """
+    if hw.kind not in _DEVICE_KIND_BY_HW_KIND:
+        raise NotImplementedError(
+            f"hw.kind={hw.kind!r} is not supported; this project's roofline "
+            f"constants and kernels are tuned for v5e. Supported kinds: "
+            f"{sorted(_DEVICE_KIND_BY_HW_KIND)}."
+        )
+    devices = jax.devices()
+    if devices and devices[0].platform == "tpu":
+        expected_kind = _DEVICE_KIND_BY_HW_KIND[hw.kind]
+        actual_kind = devices[0].device_kind
+        if actual_kind != expected_kind:
+            raise NotImplementedError(
+                f"host TPU reports device_kind={actual_kind!r}, but hw={hw.kind!r} "
+                f"expects {expected_kind!r}. Re-point the suite at the right "
+                f"hardware (kernels and roofline constants are v5e-specific)."
+            )
 
 
 def peak_flops_for(hw: HardwarePeak, flop_dtype: FlopDtype) -> float:

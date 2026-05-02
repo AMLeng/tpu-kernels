@@ -48,9 +48,10 @@ def test_rmsnorm_pallas_hits_target_bw() -> None:
 
     @jax.jit
     def fn(y: jax.Array, s: jax.Array) -> jax.Array:
-        return rmsnorm_pallas(y, s, block_size=DEFAULT_BLOCK)
+        return rmsnorm_pallas(y, s, block_shape=DEFAULT_BLOCK)
 
-    result = bench(f"rmsnorm::pallas_b{DEFAULT_BLOCK}", fn, args=(x, scale), timing="device")
+    (bm,) = DEFAULT_BLOCK
+    result = bench(f"rmsnorm::pallas_b{bm}", fn, args=(x, scale), timing="device")
     nbytes, flops = _bytes_and_flops()
     roof = analyze(flops=flops, nbytes=nbytes, seconds=result.median_s, hw=v5e())
     assert roof.bw_util >= BW_UTIL_FLOOR, (
@@ -73,10 +74,11 @@ def test_rmsnorm_pallas_device_timing_higher_bw_than_unroll() -> None:
 
     @jax.jit
     def fn(y: jax.Array, s: jax.Array) -> jax.Array:
-        return rmsnorm_pallas(y, s, block_size=DEFAULT_BLOCK)
+        return rmsnorm_pallas(y, s, block_shape=DEFAULT_BLOCK)
 
-    unroll = bench(f"rmsnorm::pallas_b{DEFAULT_BLOCK}_unroll", fn, args=(x, scale), timing="unroll")
-    device = bench(f"rmsnorm::pallas_b{DEFAULT_BLOCK}_device", fn, args=(x, scale), timing="device")
+    (bm,) = DEFAULT_BLOCK
+    unroll = bench(f"rmsnorm::pallas_b{bm}_unroll", fn, args=(x, scale), timing="unroll")
+    device = bench(f"rmsnorm::pallas_b{bm}_device", fn, args=(x, scale), timing="device")
 
     assert device.timing == "device"
     assert device.unroll == 1

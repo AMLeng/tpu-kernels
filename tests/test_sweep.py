@@ -22,19 +22,21 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 import pytest
-from benchmarks.roofline import v5e
+from benchmarks.roofline import HardwarePeak, v5e
 from benchmarks.runner import BenchResult
 from benchmarks.sweep import _check_single_chip, _config_name, sweep
+from benchmarks.workload import Workload
 
 
-def _identity_factory(**_config: Any) -> jax.stages.Wrapped:
-    """Factory returning a jit'd identity. Cheap enough to bench in tests."""
+def _identity_kernel(x: jax.Array, *, block_shape: Any = None) -> jax.Array:
+    """Stand-in pallas_fn: declares ``block_shape`` (the convention every
+    Pallas kernel in this repo follows), ignores it, returns x unchanged.
 
-    @jax.jit
-    def f(x: jax.Array) -> jax.Array:
-        return x
-
-    return f
+    sweep() jit-wraps the kernel as ``jax.jit(functools.partial(pallas_fn,
+    block_shape=value))`` and validates that ``block_shape`` is a declared
+    parameter, so the test stand-in must declare it too.
+    """
+    return x
 
 
 def _setup_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -50,19 +52,21 @@ def _x() -> jax.Array:
     return jax.random.normal(jax.random.key(0), (1,), dtype=jnp.float32)
 
 
+def _w(op: str = "op", *, flops: int = 1, nbytes: int = 1) -> Workload:
+    """Default Workload for tests: scalar input, unit flops/nbytes. Tests
+    that care about specific values build their own ``Workload`` directly."""
+    return Workload(op=op, flops=flops, nbytes=nbytes, args=(_x(),))
+
+
 def test_cartesian_product_includes_all_combinations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`{a:[1,2,3], b:[10,20]}` should produce 6 configs, named in axis order."""
     _setup_history(tmp_path, monkeypatch)
     results = sweep(
-        op="op",
-        variant_factory=_identity_factory,
+        _w(),
+        pallas_fn=_identity_kernel,
         axes={"a": [1, 2, 3], "b": [10, 20]},
-        args=(_x(),),
-        flops=1,
-        nbytes=1,
-        hw=v5e(),
         warmup=0,
         iters=1,
     )
@@ -79,28 +83,26 @@ def test_cartesian_product_includes_all_combinations(
 def test_is_valid_filters_configs_before_bench(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
-    """`is_valid` runs first; falsy configs are skipped, not benched, not in results."""
+    """``is_valid`` runs first; falsy configs are skipped — bench sees only
+    valid ones, and skipped ones don't appear in results."""
     _setup_history(tmp_path, monkeypatch)
-    benched: list[int] = []
+    benched_names: list[str] = []
 
-    def factory(*, a: int) -> jax.stages.Wrapped:
-        benched.append(a)
-        return _identity_factory()
+    def fake_bench(name: str, **_kw: Any) -> BenchResult:
+        benched_names.append(name)
+        return BenchResult(name=name, times_s=[1e-3], warmup_iters=1, timed_iters=1)
 
+    monkeypatch.setattr("benchmarks.sweep.bench", fake_bench)
     results = sweep(
-        op="op",
-        variant_factory=factory,
+        _w(),
+        pallas_fn=_identity_kernel,
         axes={"a": [1, 5, 6]},
-        args=(_x(),),
-        flops=1,
-        nbytes=1,
-        hw=v5e(),
         is_valid=lambda *, a: 12 % a == 0,
         warmup=0,
         iters=1,
     )
-    # Only divisors of 12 (1 and 6) should have built/benched.
-    assert sorted(benched) == [1, 6]
+    # Only divisors of 12 (1 and 6) should have reached bench.
+    assert sorted(benched_names) == ["op::a=1", "op::a=6"]
     assert set(results.keys()) == {"a=1", "a=6"}
     out = capsys.readouterr().out
     assert "skipped" in out.lower()
@@ -109,22 +111,20 @@ def test_is_valid_filters_configs_before_bench(
 def test_errored_configs_dont_abort_the_sweep(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
-    """A factory that raises is reported, the sweep continues."""
+    """A kernel that raises during trace for a specific block_shape is
+    reported, the sweep continues, and the surviving configs land in
+    results."""
     _setup_history(tmp_path, monkeypatch)
 
-    def factory(*, a: int) -> jax.stages.Wrapped:
-        if a == 2:
+    def kernel(x: jax.Array, *, block_shape: tuple[int, ...]) -> jax.Array:
+        if block_shape == (2,):
             raise RuntimeError("synthetic build failure")
-        return _identity_factory()
+        return x
 
     results = sweep(
-        op="op",
-        variant_factory=factory,
+        _w(),
+        pallas_fn=kernel,
         axes={"a": [1, 2, 3]},
-        args=(_x(),),
-        flops=1,
-        nbytes=1,
-        hw=v5e(),
         warmup=0,
         iters=1,
     )
@@ -132,6 +132,61 @@ def test_errored_configs_dont_abort_the_sweep(
     out = capsys.readouterr().out
     assert "errored" in out.lower()
     assert "a=2" in out
+
+
+def test_assembles_block_shape_tuple_from_cfg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """sweep always passes ``block_shape`` as a tuple, regardless of axis
+    count. 1-axis sweeps yield a 1-tuple (``(8,)``, not bare ``8``);
+    multi-axis sweeps yield an N-tuple in dict insertion order so
+    ``axes={"bm": ..., "bn": ...}`` produces ``block_shape=(bm, bn)`` —
+    matching the convention every Pallas kernel uses."""
+    _setup_history(tmp_path, monkeypatch)
+    seen: list[tuple[int, ...]] = []
+
+    def kernel(x: jax.Array, *, block_shape: tuple[int, ...]) -> jax.Array:
+        seen.append(block_shape)
+        return x
+
+    sweep(
+        _w(),
+        pallas_fn=kernel,
+        axes={"bm": [8, 16]},
+        warmup=0,
+        iters=1,
+    )
+    assert sorted(seen) == [(8,), (16,)]
+    seen.clear()
+
+    sweep(
+        _w(),
+        pallas_fn=kernel,
+        axes={"bm": [8, 16], "bn": [128]},
+        warmup=0,
+        iters=1,
+    )
+    assert sorted(seen) == [(8, 128), (16, 128)]
+
+
+def test_rejects_pallas_fn_without_block_shape_kwarg() -> None:
+    """Every Pallas kernel benched by sweep() must declare a ``block_shape``
+    parameter — that's the harness-wide convention compare()/sweep() rely
+    on to bake the value in via partial. A kernel missing the kwarg would
+    otherwise silently fall through to whatever default the kernel uses,
+    not the value the suite is sweeping. Catch it at call time."""
+
+    def kernel_without_block_shape(x: jax.Array, *, tile: int = 0) -> jax.Array:
+        return x
+
+    with pytest.raises(ValueError, match="block_shape"):
+        sweep(
+            _w(),
+            pallas_fn=kernel_without_block_shape,
+            axes={"a": [1]},
+            warmup=0,
+            iters=1,
+        )
 
 
 def test_sweep_writes_one_history_record_with_per_variant_config(
@@ -145,13 +200,9 @@ def test_sweep_writes_one_history_record_with_per_variant_config(
     """
     _setup_history(tmp_path, monkeypatch)
     sweep(
-        op="op_x",
-        variant_factory=_identity_factory,
+        _w("op_x"),
+        pallas_fn=_identity_kernel,
         axes={"bm": [8, 16], "bn": [128]},
-        args=(_x(),),
-        flops=1,
-        nbytes=1,
-        hw=v5e(),
         warmup=0,
         iters=1,
     )
@@ -176,13 +227,9 @@ def test_sweep_records_unroll_and_timing_per_variant(
     """
     _setup_history(tmp_path, monkeypatch)
     sweep(
-        op="op_t",
-        variant_factory=_identity_factory,
+        _w("op_t"),
+        pallas_fn=_identity_kernel,
         axes={"bm": [8]},
-        args=(_x(),),
-        flops=1,
-        nbytes=1,
-        hw=v5e(),
         warmup=0,
         iters=1,
     )
@@ -210,13 +257,9 @@ def test_sweep_forwards_timing_kwarg_to_bench(
 
     monkeypatch.setattr("benchmarks.sweep.bench", fake_bench)
     sweep(
-        op="op_z",
-        variant_factory=_identity_factory,
+        _w("op_z"),
+        pallas_fn=_identity_kernel,
         axes={"a": [1, 2]},
-        args=(_x(),),
-        flops=1,
-        nbytes=1,
-        hw=v5e(),
         timing="device",
         warmup=0,
         iters=1,
@@ -234,19 +277,15 @@ def test_skipped_and_errored_configs_persist_in_history(
     """
     _setup_history(tmp_path, monkeypatch)
 
-    def factory(*, a: int) -> jax.stages.Wrapped:
-        if a == 3:
+    def kernel(x: jax.Array, *, block_shape: tuple[int, ...]) -> jax.Array:
+        if block_shape == (3,):
             raise RuntimeError("boom")
-        return _identity_factory()
+        return x
 
     sweep(
-        op="op_y",
-        variant_factory=factory,
+        _w("op_y"),
+        pallas_fn=kernel,
         axes={"a": [1, 2, 3, 4]},
-        args=(_x(),),
-        flops=1,
-        nbytes=1,
-        hw=v5e(),
         is_valid=lambda *, a: a != 2,
         warmup=0,
         iters=1,
@@ -289,13 +328,9 @@ def test_table_marks_winner_and_sorts_by_sol_desc(
     monkeypatch.setattr("benchmarks.sweep.bench", fake_bench)
 
     sweep(
-        op="op",
-        variant_factory=_identity_factory,
+        _w(),
+        pallas_fn=_identity_kernel,
         axes={"a": [1, 2, 3]},
-        args=(_x(),),
-        flops=1,
-        nbytes=1,
-        hw=v5e(),
         warmup=0,
         iters=2,
     )
@@ -326,13 +361,9 @@ def test_sweep_with_no_valid_configs_doesnt_crash(
     """
     _setup_history(tmp_path, monkeypatch)
     results = sweep(
-        op="op",
-        variant_factory=_identity_factory,
+        _w(),
+        pallas_fn=_identity_kernel,
         axes={"a": [1, 2, 3]},
-        args=(_x(),),
-        flops=1,
-        nbytes=1,
-        hw=v5e(),
         is_valid=lambda *, a: False,
         warmup=0,
         iters=1,
@@ -388,12 +419,9 @@ def test_sweep_warns_on_multi_chip_hw(tmp_path: Path, monkeypatch: pytest.Monkey
     _setup_history(tmp_path, monkeypatch)
     with pytest.warns(UserWarning, match="single-chip-only"):
         sweep(
-            op="op",
-            variant_factory=_identity_factory,
+            _w(),
+            pallas_fn=_identity_kernel,
             axes={"a": [1]},
-            args=(_x(),),
-            flops=1,
-            nbytes=1,
             hw=v5e(num_chips=8),
             warmup=0,
             iters=1,
@@ -419,18 +447,42 @@ def test_sweep_raises_when_any_config_reports_unphysical_sol(
     monkeypatch.setattr("benchmarks.sweep.bench", fake_bench)
     with pytest.raises(RuntimeError, match=r"(?i)sol.*100%|100%.*unphysical"):
         sweep(
-            op="op_unphys",
-            variant_factory=_identity_factory,
+            _w("op_unphys", nbytes=10**12),
+            pallas_fn=_identity_kernel,
             axes={"a": [1, 2]},
-            args=(_x(),),
-            flops=1,
-            nbytes=10**12,
-            hw=v5e(),
             warmup=0,
             iters=1,
         )
     # History must NOT have been written when the run is unphysical.
     assert not list((tmp_path / "op_unphys").glob("*.json"))
+
+
+def test_sweep_rejects_unsupported_hardware(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mirror of compare's hw-validity guard. A swept tuning run on the
+    wrong hardware would emit a leaderboard of fictional SoL%/BW% — the
+    operator might pick the "best" config based on numbers that came
+    from a different chip entirely. Refuse up front."""
+    _setup_history(tmp_path, monkeypatch)
+    fake = HardwarePeak(
+        kind="v6e",
+        bf16_flops=918e12,
+        f32_flops=459e12,
+        int8_ops=1836e12,
+        hbm_bw=1640e9,
+        ici_bw_per_link=400e9,
+        ici_links_per_chip=4,
+    )
+    with pytest.raises(NotImplementedError, match="v5e"):
+        sweep(
+            _w(),
+            pallas_fn=_identity_kernel,
+            axes={"a": [1]},
+            hw=fake,
+            warmup=0,
+            iters=1,
+        )
 
 
 def test_config_name_encoding_preserves_axis_insertion_order() -> None:

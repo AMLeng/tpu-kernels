@@ -9,7 +9,9 @@ report a different ``BW%`` than ``PERF.md`` claims as Current).
 
 from __future__ import annotations
 
+import pytest
 from benchmarks.roofline import V5E_VMEM_CAPACITY
+from benchmarks.suites._common import validate_block_shapes
 from benchmarks.suites.scale import _make_parser
 
 from tpu_kernels.ops.scale.pallas import DEFAULT_BLOCK
@@ -39,6 +41,25 @@ def test_timing_default_matches_bench_default() -> None:
 def test_timing_flag_accepts_device() -> None:
     args = _make_parser().parse_args(["--timing", "device"])
     assert args.timing == "device"
+
+
+def test_block_rejects_wrong_axis_count() -> None:
+    """scale's Pallas variant tiles in 2D; a 1-axis ``--block`` would
+    crash inside ``scale_pallas`` on the shape mismatch. Catching it at
+    the CLI keeps the error close to the typo."""
+    parser = _make_parser()
+    args = parser.parse_args(["--block", "128"])
+    with pytest.raises(SystemExit):
+        validate_block_shapes(args, expected_axes=2, parser=parser)
+
+
+def test_sweep_block_rejects_wrong_axis_count() -> None:
+    """Mirror of the --block rejection for the sweep flag — a 1-axis
+    sweep against a 2-D kernel would silently degenerate."""
+    parser = _make_parser()
+    args = parser.parse_args(["--sweep-block", "8,16,32"])
+    with pytest.raises(SystemExit):
+        validate_block_shapes(args, expected_axes=2, parser=parser)
 
 
 def test_default_input_size_clears_vmem_floor() -> None:

@@ -60,8 +60,11 @@ benchmarks/suites/<name>.py                 # argparse CLI calling compare(...)
 
 Pallas variants are plain functions taking `interpret: bool = False` so CPU
 correctness tests can pass it through to `pl.pallas_call(..., interpret=...)`.
-Bench sites jit them in a closure that captures non-array config (e.g.
-`block_shape`); don't decorate the variant itself with `@jax.jit`.
+They also declare `block_shape: tuple[int, ...]` (no other name) — the
+harness validates the kwarg via `inspect.signature` and bakes the value
+in via `pallas_variant(fn, block_shape=...)` for compare or directly
+inside `sweep()` for a tuning loop. Don't decorate the variant itself
+with `@jax.jit`; the harness does that.
 
 When the new kernel hits its regime target, flip its curriculum entry
 from `[planned]` to `[done]` and link the new `PERF.md`.
@@ -71,8 +74,17 @@ from `[planned]` to `[done]` and link the new `PERF.md`.
 - `benchmarks/runner.py` — warmup + N timed iters around `block_until_ready`.
 - `benchmarks/roofline.py` — v5e per-chip peaks, MFU/BW math. **All
   hardware constants live here.** Update in one place if Google revises figures.
+  `check_supported_hardware()` refuses non-v5e hw or non-v5e host TPUs.
+- `benchmarks/workload.py` — `Workload` dataclass bundling the
+  (op, args, flops, nbytes, flop_dtype) shared by compare and sweep.
 - `benchmarks/compare.py` — N-variant comparison table, optional HLO dump,
-  writes JSON to `bench_history/<op>/` with the current git SHA.
+  writes JSON to `bench_history/<op>/` with the current git SHA. Build
+  Pallas entries with `pallas_variant(fn, block_shape=...)`.
+- `benchmarks/sweep.py` — Cartesian sweep over `block_shape` configs for a
+  single Pallas kernel; sibling JSON record under `bench_history/<op>/`.
+- `benchmarks/suites/_common.py` — shared CLI scaffolding (`base_parser`
+  for `--dtype`/`--timing`/`--block`/`--sweep-block`,
+  `validate_block_shapes` for the per-op axis-count check).
 - `benchmarks/suites/<op>.py` — one suite file per op.
 
 Run a suite: `uv run python -m benchmarks.suites.<op>`. The README cookbook

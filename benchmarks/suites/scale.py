@@ -20,57 +20,27 @@ import argparse
 import jax
 import jax.numpy as jnp
 
-from benchmarks.compare import compare
-from benchmarks.roofline import v5e
+from benchmarks.compare import compare, pallas_variant
+from benchmarks.suites._common import base_parser, validate_block_shapes
 from benchmarks.sweep import sweep
+from benchmarks.workload import Workload
 from tpu_kernels.ops.scale import scale_pallas, scale_xla
 from tpu_kernels.ops.scale.pallas import DEFAULT_BLOCK
 
 
-def _csv_ints(s: str) -> tuple[int, ...]:
-    """Parse ``"8,16,32"`` → ``(8, 16, 32)``. argparse hook for sweep axes."""
-    return tuple(int(x) for x in s.split(","))
-
-
 def _make_parser() -> argparse.ArgumentParser:
-    """Build the suite's CLI parser.
-
-    Extracted so tests can pin the ``--block`` default against the kernel's
-    own ``DEFAULT_BLOCK`` — a no-flag run must reproduce the number that
-    ``PERF.md`` records as Current.
-    """
-    parser = argparse.ArgumentParser()
+    """Add op-specific shape flags and pin ``--block`` to ``DEFAULT_BLOCK``."""
+    parser = argparse.ArgumentParser(parents=[base_parser()])
     parser.add_argument("--m", type=int, default=8192)
     parser.add_argument("--n", type=int, default=8192)
-    parser.add_argument(
-        "--block",
-        type=int,
-        nargs=2,
-        default=DEFAULT_BLOCK,
-        help="Single block shape (ignored when --sweep-block is set).",
-    )
-    parser.add_argument(
-        "--sweep-block",
-        type=_csv_ints,
-        nargs=2,
-        default=None,
-        metavar=("BM_LIST", "BN_LIST"),
-        help="Cartesian sweep over (bm, bn). Example: --sweep-block 8,16,32 128,256,512",
-    )
-    parser.add_argument("--dtype", choices=["bf16", "f32"], default="bf16")
-    parser.add_argument("--dump-hlo", action="store_true")
-    parser.add_argument("--profile-dir", default=None)
-    parser.add_argument(
-        "--timing",
-        choices=["unroll", "device"],
-        default="unroll",
-        help="Timing mode forwarded to bench(); device-mode is TPU-only.",
-    )
+    parser.set_defaults(block=list(DEFAULT_BLOCK))
     return parser
 
 
 def main() -> None:
-    args = _make_parser().parse_args()
+    parser = _make_parser()
+    args = parser.parse_args()
+    validate_block_shapes(args, expected_axes=2, parser=parser)
 
     dtype = jnp.bfloat16 if args.dtype == "bf16" else jnp.float32
     bytes_per_elem = jnp.dtype(dtype).itemsize
@@ -78,18 +48,10 @@ def main() -> None:
 
     flops = args.m * args.n  # one mul per element
     nbytes = 2 * args.m * args.n * bytes_per_elem  # read + write
+    workload = Workload(op="scale", flops=flops, nbytes=nbytes, args=(x,), flop_dtype=args.dtype)
 
     if args.sweep_block is not None:
         bms, bns = args.sweep_block
-
-        def variant_factory(*, bm: int, bn: int) -> jax.stages.Wrapped:
-            block_shape = (bm, bn)
-
-            @jax.jit
-            def fn(y: jax.Array) -> jax.Array:
-                return scale_pallas(y, block_shape=block_shape)
-
-            return fn
 
         def is_valid(*, bm: int, bn: int) -> bool:
             # Pre-emptive divisibility filter so the sweep doesn't crash inside
@@ -97,14 +59,9 @@ def main() -> None:
             return args.m % bm == 0 and args.n % bn == 0
 
         sweep(
-            op="scale",
-            variant_factory=variant_factory,
+            workload,
+            pallas_fn=scale_pallas,
             axes={"bm": list(bms), "bn": list(bns)},
-            args=(x,),
-            flops=flops,
-            nbytes=nbytes,
-            hw=v5e(),
-            flop_dtype=args.dtype,
             is_valid=is_valid,
             timing=args.timing,
         )
@@ -112,18 +69,12 @@ def main() -> None:
 
     block_shape: tuple[int, int] = (args.block[0], args.block[1])
 
-    @jax.jit
-    def pallas_fn(y: jax.Array) -> jax.Array:
-        return scale_pallas(y, block_shape=block_shape)
-
     compare(
-        op="scale",
-        variants={"xla": scale_xla, "pallas": pallas_fn},
-        args=(x,),
-        flops=flops,
-        nbytes=nbytes,
-        hw=v5e(),
-        flop_dtype=args.dtype,
+        workload,
+        variants={
+            "xla": scale_xla,
+            "pallas": pallas_variant(scale_pallas, block_shape=block_shape),
+        },
         dump_hlo=args.dump_hlo,
         profile_dir=args.profile_dir,
         timing=args.timing,

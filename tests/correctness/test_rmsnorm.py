@@ -17,8 +17,8 @@ VARIANTS: dict[str, Callable[[jax.Array, jax.Array], jax.Array]] = {
     "xla": rmsnorm_xla,
     # Two block sizes to cover both the single-block (grid of 1) and the
     # multi-block (grid of >1) lowering paths. Pallas runs on CPU via interpret=True.
-    "pallas_b4": partial(rmsnorm_pallas, block_size=4, interpret=True),
-    "pallas_b32": partial(rmsnorm_pallas, block_size=32, interpret=True),
+    "pallas_b4": partial(rmsnorm_pallas, block_shape=(4,), interpret=True),
+    "pallas_b32": partial(rmsnorm_pallas, block_shape=(32,), interpret=True),
 }
 
 # bf16 is the project default working dtype (CLAUDE.md). It's also the only

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from benchmarks.roofline import (
     V5E_BF16_PEAK_FLOPS,
@@ -10,7 +12,9 @@ from benchmarks.roofline import (
     V5E_ICI_LINKS_PER_CHIP,
     V5E_ICI_PER_LINK,
     V5E_INT8_PEAK_OPS,
+    HardwarePeak,
     analyze,
+    check_supported_hardware,
     peak_flops_for,
     regime,
     v5e,
@@ -19,6 +23,7 @@ from benchmarks.roofline import (
 
 def test_v5e_constants_match_announcement() -> None:
     hw = v5e()
+    assert hw.kind == "v5e"
     assert hw.bf16_flops == V5E_BF16_PEAK_FLOPS == 197e12
     assert hw.f32_flops == V5E_F32_PEAK_FLOPS == 98e12
     assert hw.int8_ops == V5E_INT8_PEAK_OPS == 393e12
@@ -191,3 +196,79 @@ def test_regime_handles_infinite_intensity() -> None:
     # Zero-byte kernels (compute-only on registers) report inf intensity;
     # they should still classify as compute-bound, not blow up.
     assert regime(arithmetic_intensity=float("inf"), ridge_point=240.0) == "compute-bound"
+
+
+class _FakeDevice:
+    """Stand-in for ``jax.devices()[0]`` — only ``platform`` and ``device_kind``
+    matter for the supported-hardware check. Built per test so each test
+    can express its own scenario without polluting module state."""
+
+    def __init__(self, platform: str, device_kind: str) -> None:
+        self.platform = platform
+        self.device_kind = device_kind
+
+
+def _patch_devices(monkeypatch: pytest.MonkeyPatch, devices: list[Any]) -> None:
+    """Replace ``jax.devices`` with one that returns ``devices``."""
+    monkeypatch.setattr("jax.devices", lambda *args, **kwargs: devices)
+
+
+def test_check_supported_hardware_accepts_v5e_on_cpu_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default path: developer running tests on a CPU machine. The
+    hw kind is v5e (the project target), no TPU device to cross-check
+    against, so the check passes silently."""
+    _patch_devices(monkeypatch, [_FakeDevice(platform="cpu", device_kind="cpu")])
+    check_supported_hardware(v5e())  # no raise
+
+
+def test_check_supported_hardware_accepts_v5e_on_v5e_tpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Canonical happy path: hw=v5e and device is "TPU v5 lite" (the JAX
+    string for v5e). Both agree → no raise."""
+    _patch_devices(monkeypatch, [_FakeDevice(platform="tpu", device_kind="TPU v5 lite")])
+    check_supported_hardware(v5e())  # no raise
+
+
+def test_check_supported_hardware_rejects_non_v5e_kind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The roofline constants in roofline.py are v5e-specific. A
+    HardwarePeak with a different ``kind`` would pass numbers from
+    another generation through the math and silently produce wrong
+    BW%/MFU% — refuse outright."""
+    _patch_devices(monkeypatch, [_FakeDevice(platform="cpu", device_kind="cpu")])
+    fake = HardwarePeak(
+        kind="v6e",
+        bf16_flops=918e12,
+        f32_flops=459e12,
+        int8_ops=1836e12,
+        hbm_bw=1640e9,
+        ici_bw_per_link=400e9,
+        ici_links_per_chip=4,
+    )
+    with pytest.raises(NotImplementedError, match="v5e"):
+        check_supported_hardware(fake)
+
+
+def test_check_supported_hardware_rejects_non_v5e_tpu_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caller passed hw=v5e() but the host is actually a v4 (or v5p, or
+    v6e). The math would compile and run, but BW%/MFU% would be lies.
+    Refuse — the suite must be re-pointed at the right hw."""
+    _patch_devices(monkeypatch, [_FakeDevice(platform="tpu", device_kind="TPU v4")])
+    with pytest.raises(NotImplementedError, match="v5e"):
+        check_supported_hardware(v5e())
+
+
+def test_check_supported_hardware_skips_tpu_check_on_gpu_or_other(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On non-TPU platforms (CPU, GPU) the device-kind check doesn't apply
+    — the suite is in interpret/correctness mode, hw constants are just
+    the model. Only the kind-field check fires."""
+    _patch_devices(monkeypatch, [_FakeDevice(platform="gpu", device_kind="NVIDIA A100")])
+    check_supported_hardware(v5e())  # no raise

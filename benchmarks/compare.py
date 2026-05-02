@@ -2,28 +2,27 @@
 
 Usage from a suite file:
 
-    from benchmarks.compare import compare
-    from benchmarks.roofline import v5e
+    from benchmarks.compare import compare, pallas_variant
+    from benchmarks.workload import Workload
 
+    workload = Workload(op="rmsnorm", flops=..., nbytes=..., args=(x, scale))
     compare(
-        op="rmsnorm",
-        variants={"xla": xla_fn, "pallas": pallas_fn},
-        args=(x,),
-        flops=count_flops(x),
-        nbytes=count_bytes(x),
-        hw=v5e(),
+        workload,
+        variants={"xla": xla_fn, "pallas": pallas_variant(kernel, block_shape=...)},
     )
 
 Each variant is jit-compiled, benched with the runner, and analyzed against
 the same roofline. Output is a table to stdout plus a JSON record under
 bench_history/<op>/. With `dump_hlo=True`, prints the lowered HLO per variant.
+``hw`` defaults to ``v5e()``; non-v5e hw or non-v5e host TPU raises
+``NotImplementedError`` (this project's constants and kernels are v5e-tuned).
 """
 
 from __future__ import annotations
 
 import json
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -31,17 +30,26 @@ from typing import Any, Literal
 import jax
 
 from benchmarks import _history
+from benchmarks._pallas import pallas_variant
 from benchmarks.roofline import (
     FlopDtype,
     HardwarePeak,
     Roofline,
     analyze,
     arithmetic_intensity,
+    check_supported_hardware,
     peak_flops_for,
     regime,
     v5e,
 )
 from benchmarks.runner import BenchResult, bench
+from benchmarks.workload import Workload
+
+# Re-exported so suites can keep ``from benchmarks.compare import compare,
+# pallas_variant`` — the helper actually lives in ``benchmarks._pallas``
+# (shared with sweep) but compare is the natural import path for suites
+# already pulling ``compare`` from here.
+__all__ = ["BenchRow", "compare", "pallas_variant"]
 
 # Type alias for the per-variant tuple carried through the table/history helpers.
 BenchRow = tuple[str, BenchResult, Roofline]
@@ -69,15 +77,11 @@ def _check_ici_consistency(hw: HardwarePeak, ici_bytes: int) -> None:
 
 
 def compare(
-    op: str,
+    workload: Workload,
     variants: dict[str, Callable[..., Any]],
-    args: Sequence[Any] = (),
-    kwargs: dict[str, Any] | None = None,
     *,
-    flops: int,
-    nbytes: int,
+    kwargs: dict[str, Any] | None = None,
     hw: HardwarePeak | None = None,
-    flop_dtype: FlopDtype = "bf16",
     ici_bytes: int = 0,
     warmup: int = 5,
     iters: int = 20,
@@ -87,7 +91,8 @@ def compare(
     write_history: bool = True,
     config: dict[str, Any] | None = None,
 ) -> dict[str, Roofline]:
-    """Bench each variant and print a roofline comparison table.
+    """Bench each variant against the same workload and print a roofline
+    comparison table.
 
     Returns a dict mapping variant name -> Roofline result, also writes a
     timestamped JSON record to bench_history/<op>/ if write_history is True.
@@ -95,10 +100,20 @@ def compare(
     `config` is stamped into each JSON record alongside the variant rows. Use
     it for per-call tuning knobs (e.g. `block_shape`) so a sweep can keep
     stable variant names and still be queryable across runs.
+
+    Variants are an ordinary ``dict[str, Callable]``; build Pallas entries
+    with ``pallas_variant()`` so the kernel's ``block_shape`` parameter
+    is validated and baked in.
     """
     hw = hw if hw is not None else v5e()
+    check_supported_hardware(hw)
     kwargs = kwargs or {}
     _check_ici_consistency(hw, ici_bytes)
+    op = workload.op
+    args = workload.args
+    flops = workload.flops
+    nbytes = workload.nbytes
+    flop_dtype = workload.flop_dtype
 
     # Wrap each variant in jax.jit once; re-using the same wrapper across the
     # dump-HLO and bench passes also reuses JAX's compilation cache.

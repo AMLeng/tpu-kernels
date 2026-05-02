@@ -9,9 +9,14 @@ per-feature ``scale`` multiply, mirroring the canonical Llama pattern.
 literal in the jaxpr — no input slot, no Ref. Different ``eps`` values
 therefore produce distinct traces.
 
+``block_shape`` is a 1-tuple ``(bm,)`` rather than a bare ``int``: every
+Pallas kernel in this repo declares its tile geometry under the same
+parameter name, so the bench harness (``compare()`` / ``sweep()``) can
+bake the value in via ``functools.partial`` without per-kernel policy.
+
 This module exposes a plain function — bench/test sites jit it themselves
-(the bench captures ``block_size`` in a closure, the correctness tests use
-``interpret=True`` and don't need jit).
+(the bench captures ``block_shape`` in a closure, the correctness tests
+use ``interpret=True`` and don't need jit).
 """
 
 from __future__ import annotations
@@ -22,7 +27,7 @@ import jax
 import jax.numpy as jnp
 from jax.experimental import pallas as pl
 
-DEFAULT_BLOCK = 128
+DEFAULT_BLOCK = (128,)
 
 
 def _rms_kernel(x_ref, scale_ref, o_ref, *, eps: float) -> None:
@@ -35,18 +40,20 @@ def rmsnorm(
     x: jax.Array,
     scale: jax.Array,
     eps: float = 1e-6,
-    block_size: int = DEFAULT_BLOCK,
+    block_shape: tuple[int, ...] = DEFAULT_BLOCK,
     interpret: bool = False,
 ) -> jax.Array:
     if x.ndim != 2:
         raise ValueError(f"rmsnorm expects 2-D input, got {x.shape}")
     if scale.ndim != 1:
         raise ValueError(f"rmsnorm expects 1-D scale, got {scale.shape}")
-    bm = block_size
+    if len(block_shape) != 1:
+        raise ValueError(f"rmsnorm expects a 1-axis block_shape, got {block_shape}")
+    (bm,) = block_shape
     m, n = x.shape
-    block_shape = (bm, n)
+    tile_shape = (bm, n)
     if m % bm:
-        raise ValueError(f"shape {x.shape} not divisible by block {block_shape}")
+        raise ValueError(f"shape {x.shape} not divisible by block {tile_shape}")
     if scale.shape[0] != n:
         raise ValueError(f"scale shape {scale.shape} does not match feature dim {n}")
 
@@ -54,10 +61,10 @@ def rmsnorm(
         partial(_rms_kernel, eps=eps),
         grid=(m // bm,),
         in_specs=[
-            pl.BlockSpec(block_shape, lambda i: (i, 0)),
+            pl.BlockSpec(tile_shape, lambda i: (i, 0)),
             pl.BlockSpec(scale.shape, lambda i: (0,)),
         ],
-        out_specs=pl.BlockSpec(block_shape, lambda i: (i, 0)),
+        out_specs=pl.BlockSpec(tile_shape, lambda i: (i, 0)),
         out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
         interpret=interpret,
     )(x, scale)

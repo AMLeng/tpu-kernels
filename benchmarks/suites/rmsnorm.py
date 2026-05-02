@@ -21,54 +21,27 @@ import argparse
 import jax
 import jax.numpy as jnp
 
-from benchmarks.compare import compare
-from benchmarks.roofline import v5e
+from benchmarks.compare import compare, pallas_variant
+from benchmarks.suites._common import base_parser, validate_block_shapes
 from benchmarks.sweep import sweep
+from benchmarks.workload import Workload
 from tpu_kernels.ops.rmsnorm import rmsnorm_pallas, rmsnorm_xla
 from tpu_kernels.ops.rmsnorm.pallas import DEFAULT_BLOCK
 
 
-def _csv_ints(s: str) -> tuple[int, ...]:
-    """Parse ``"8,16,32"`` → ``(8, 16, 32)``. argparse hook for sweep axis."""
-    return tuple(int(x) for x in s.split(","))
-
-
 def _make_parser() -> argparse.ArgumentParser:
-    """Build the suite's CLI parser. Factored so tests can pin defaults
-    against bench() / kernel without launching the suite."""
-    parser = argparse.ArgumentParser()
-    # Default shape gives 128 MiB of bf16 input — 4x v5e VMEM, the floor
-    # CLAUDE.md sets so a chained-call XLA pipeline can't keep the working
-    # set on chip and inflate per-call BW% under unroll mode.
+    """Add op-specific shape flags and pin ``--block`` to ``DEFAULT_BLOCK``."""
+    parser = argparse.ArgumentParser(parents=[base_parser()])
     parser.add_argument("--bs", type=int, default=8192, help="leading (batch * seq) dim")
     parser.add_argument("--hidden", type=int, default=8192)
-    parser.add_argument(
-        "--block",
-        type=int,
-        default=DEFAULT_BLOCK,
-        help="Pallas row-tile (bm). Must divide --bs. Ignored when --sweep-block is set.",
-    )
-    parser.add_argument(
-        "--sweep-block",
-        type=_csv_ints,
-        default=None,
-        metavar="BM_LIST",
-        help="Sweep over block_size values. Example: --sweep-block 8,16,32,64,128",
-    )
-    parser.add_argument("--dtype", choices=["bf16", "f32"], default="bf16")
-    parser.add_argument("--dump-hlo", action="store_true")
-    parser.add_argument("--profile-dir", default=None)
-    parser.add_argument(
-        "--timing",
-        choices=["unroll", "device"],
-        default="unroll",
-        help="Timing mode forwarded to bench(); device-mode is TPU-only.",
-    )
+    parser.set_defaults(block=list(DEFAULT_BLOCK))
     return parser
 
 
 def main() -> None:
-    args = _make_parser().parse_args()
+    parser = _make_parser()
+    args = parser.parse_args()
+    validate_block_shapes(args, expected_axes=1, parser=parser)
 
     dtype = jnp.bfloat16 if args.dtype == "bf16" else jnp.float32
     bytes_per_elem = jnp.dtype(dtype).itemsize
@@ -80,16 +53,12 @@ def main() -> None:
     flops = 4 * bs * h
     # Read x + read scale + write y. Scale is small but we count it for honesty.
     nbytes = 2 * bs * h * bytes_per_elem + h * bytes_per_elem
+    workload = Workload(
+        op="rmsnorm", flops=flops, nbytes=nbytes, args=(x, scale), flop_dtype=args.dtype
+    )
 
     if args.sweep_block is not None:
-        bms = args.sweep_block
-
-        def variant_factory(*, bm: int) -> jax.stages.Wrapped:
-            @jax.jit
-            def fn(y: jax.Array, s: jax.Array) -> jax.Array:
-                return rmsnorm_pallas(y, s, block_size=bm)
-
-            return fn
+        (bms,) = args.sweep_block
 
         def is_valid(*, bm: int) -> bool:
             # Pre-emptive divisibility filter so the sweep doesn't crash inside
@@ -97,37 +66,26 @@ def main() -> None:
             return bs % bm == 0
 
         sweep(
-            op="rmsnorm",
-            variant_factory=variant_factory,
+            workload,
+            pallas_fn=rmsnorm_pallas,
             axes={"bm": list(bms)},
-            args=(x, scale),
-            flops=flops,
-            nbytes=nbytes,
-            hw=v5e(),
-            flop_dtype=args.dtype,
             is_valid=is_valid,
             timing=args.timing,
         )
         return
 
-    block_size = args.block
-
-    @jax.jit
-    def pallas_fn(y: jax.Array, s: jax.Array) -> jax.Array:
-        return rmsnorm_pallas(y, s, block_size=block_size)
+    block_shape = tuple(args.block)
 
     compare(
-        op="rmsnorm",
-        variants={"xla": rmsnorm_xla, "pallas": pallas_fn},
-        args=(x, scale),
-        flops=flops,
-        nbytes=nbytes,
-        hw=v5e(),
-        flop_dtype=args.dtype,
+        workload,
+        variants={
+            "xla": rmsnorm_xla,
+            "pallas": pallas_variant(rmsnorm_pallas, block_shape=block_shape),
+        },
         dump_hlo=args.dump_hlo,
         profile_dir=args.profile_dir,
         timing=args.timing,
-        config={"bs": bs, "hidden": h, "dtype": args.dtype, "block_size": block_size},
+        config={"bs": bs, "hidden": h, "dtype": args.dtype, "block_shape": list(block_shape)},
     )
 
 

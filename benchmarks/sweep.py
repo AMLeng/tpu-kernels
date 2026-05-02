@@ -9,7 +9,7 @@ or ``"sweep"``) so an aggregator can read either kind without sniffing.
 Output is a perf-sorted leaderboard to stdout plus a single timestamped
 JSON. Configs that fail an optional ``is_valid`` predicate are skipped
 without bench (and without crashing the loop on a divisibility mismatch);
-configs that raise during build or run are caught and reported as errored.
+configs that raise during trace or run are caught and reported as errored.
 Both sets land in the JSON record so the recorded shape of the sweep
 matches what was *attempted*, not just what ran.
 
@@ -29,20 +29,21 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-import jax
-
 from benchmarks import _history
+from benchmarks._pallas import pallas_variant
 from benchmarks.roofline import (
     FlopDtype,
     HardwarePeak,
     Roofline,
     analyze,
     arithmetic_intensity,
+    check_supported_hardware,
     peak_flops_for,
     regime,
     v5e,
 )
 from benchmarks.runner import BenchResult, bench
+from benchmarks.workload import Workload
 
 # (config, name, BenchResult, Roofline) for each successfully-benched config.
 SweepRow = tuple[dict[str, Any], str, BenchResult, Roofline]
@@ -72,41 +73,45 @@ def _check_single_chip(hw: HardwarePeak) -> None:
 
 
 def sweep(
-    op: str,
-    variant_factory: Callable[..., jax.stages.Wrapped],
+    workload: Workload,
+    pallas_fn: Callable[..., Any],
     axes: dict[str, Sequence[Any]],
-    args: Sequence[Any] = (),
     *,
-    flops: int,
-    nbytes: int,
     hw: HardwarePeak | None = None,
-    flop_dtype: FlopDtype = "bf16",
     is_valid: Callable[..., bool] | None = None,
     warmup: int = 5,
     iters: int = 20,
     timing: Literal["unroll", "device"] = "unroll",
     write_history: bool = True,
 ) -> dict[str, Roofline]:
-    """Bench ``variant_factory(**config)`` for every config in ``product(axes)``.
+    """Bench ``pallas_fn(*workload.args, block_shape=...)`` for every config
+    in ``product(axes)``.
 
     ``axes`` maps axis name → list of values. Insertion order is preserved
-    in variant names, table columns, and JSON keys, so the user's chosen
-    axis order is the one they'll see everywhere.
+    in variant names, table columns, JSON keys, and the assembled
+    ``block_shape`` tuple, so ``axes={"bm": ..., "bn": ...}`` produces
+    ``block_shape=(bm, bn)`` — matching the convention every Pallas kernel
+    in this repo follows. 1-axis sweeps yield 1-tuples (``(8,)``), not
+    bare scalars: the kernel signature is uniform.
 
-    ``variant_factory(**config)`` must return a ``jax.jit``-wrapped callable.
-    The factory pattern (rather than passing pre-built variants) exists so
-    the suite controls the jit closure — typically capturing per-config
-    constants like ``block_shape`` so they don't become traced inputs. The
-    type annotation pins this contract; pyright catches a factory that
-    returns a plain function.
+    Each config's variant is built via ``pallas_variant``, which validates
+    the kernel's ``block_shape`` parameter and bakes the value in via
+    ``functools.partial`` so it's a closed-over Python static, not a
+    traced input.
 
     ``is_valid(**config) -> bool`` filters the product before bench. Configs
     that fail validation are recorded but not built; configs that raise
-    during build or run are caught and reported. The sweep returns
+    during trace or run are caught and reported. The sweep returns
     ``{name: Roofline}`` for the successfully-benched configs only.
     """
     hw = hw if hw is not None else v5e()
+    check_supported_hardware(hw)
     _check_single_chip(hw)
+    op = workload.op
+    args = workload.args
+    flops = workload.flops
+    nbytes = workload.nbytes
+    flop_dtype = workload.flop_dtype
 
     axis_names = list(axes.keys())
     axis_values = [list(axes[k]) for k in axis_names]
@@ -126,8 +131,12 @@ def sweep(
     errored: list[tuple[dict[str, Any], str]] = []
     for cfg in valid_configs:
         name = _config_name(cfg)
+        # block_shape is always a tuple — 1-axis sweeps still yield (bm,),
+        # never bare bm — so kernels can declare it uniformly as
+        # `block_shape: tuple[int, ...]` regardless of axis count.
+        block_shape = tuple(cfg.values())
+        fn = pallas_variant(pallas_fn, block_shape=block_shape)
         try:
-            fn = variant_factory(**cfg)
             br = bench(
                 name=f"{op}::{name}",
                 fn=fn,
@@ -145,8 +154,8 @@ def sweep(
             )
             rows.append((cfg, name, br, roof))
         except Exception as e:
-            # Catch anything: a sweep that aborts on the first divisibility crash
-            # or compile error wastes the whole tuning loop. Errored configs
+            # Catch anything: a sweep that aborts on the first compile or
+            # trace error wastes the whole tuning loop. Errored configs
             # land in the JSON so they're visible after the fact.
             errored.append((cfg, repr(e)))
 

@@ -17,6 +17,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import jax
+import jax.numpy as jnp
 import pytest
 from benchmarks._history import git_sha
 from benchmarks.compare import (
@@ -24,9 +26,11 @@ from benchmarks.compare import (
     _check_ici_consistency,
     _print_table,
     _write_history,
+    compare,
 )
-from benchmarks.roofline import FlopDtype, analyze, v5e
+from benchmarks.roofline import FlopDtype, HardwarePeak, analyze, v5e
 from benchmarks.runner import BenchResult
+from benchmarks.workload import Workload
 
 
 def _row(flop_dtype: FlopDtype, flops: int, nbytes: int):
@@ -274,20 +278,14 @@ def test_compare_forwards_timing_kwarg_to_bench(monkeypatch: pytest.MonkeyPatch)
         return BenchResult(name="x", times_s=[1e-3], warmup_iters=1, timed_iters=1)
 
     monkeypatch.setattr("benchmarks.compare.bench", fake_bench)
-    import jax
-    import jax.numpy as jnp
-    from benchmarks.compare import compare
 
     @jax.jit
     def f(x: jax.Array) -> jax.Array:
         return x
 
     compare(
-        op="op",
+        Workload(op="op", flops=1, nbytes=1, args=(jnp.zeros(1),)),
         variants={"v": f},
-        args=(jnp.zeros(1),),
-        flops=1,
-        nbytes=1,
         timing="device",
         write_history=False,
     )
@@ -303,20 +301,14 @@ def test_compare_defaults_timing_to_unroll(monkeypatch: pytest.MonkeyPatch) -> N
         return BenchResult(name="x", times_s=[1e-3], warmup_iters=1, timed_iters=1)
 
     monkeypatch.setattr("benchmarks.compare.bench", fake_bench)
-    import jax
-    import jax.numpy as jnp
-    from benchmarks.compare import compare
 
     @jax.jit
     def f(x: jax.Array) -> jax.Array:
         return x
 
     compare(
-        op="op",
+        Workload(op="op", flops=1, nbytes=1, args=(jnp.zeros(1),)),
         variants={"v": f},
-        args=(jnp.zeros(1),),
-        flops=1,
-        nbytes=1,
         write_history=False,
     )
     assert captured == ["unroll"]
@@ -385,9 +377,6 @@ def test_compare_raises_when_variant_reports_unphysical_sol(
         return BenchResult(name="x", times_s=[1e-9], warmup_iters=1, timed_iters=1)
 
     monkeypatch.setattr("benchmarks.compare.bench", fake_bench)
-    import jax
-    import jax.numpy as jnp
-    from benchmarks.compare import compare
 
     @jax.jit
     def f(x: jax.Array) -> jax.Array:
@@ -395,11 +384,8 @@ def test_compare_raises_when_variant_reports_unphysical_sol(
 
     with pytest.raises(RuntimeError, match=r"(?i)sol.*100%|100%.*unphysical"):
         compare(
-            op="op",
+            Workload(op="op", flops=1, nbytes=10**12, args=(jnp.zeros(1),)),
             variants={"v": f},
-            args=(jnp.zeros(1),),
-            flops=1,
-            nbytes=10**12,
         )
     # And: history must NOT have been written when the run is unphysical.
     assert not list(tmp_path.glob("op/*.json"))
@@ -418,20 +404,14 @@ def test_compare_silent_for_sol_at_or_below_one(monkeypatch: pytest.MonkeyPatch)
         )
 
     monkeypatch.setattr("benchmarks.compare.bench", fake_bench)
-    import jax
-    import jax.numpy as jnp
-    from benchmarks.compare import compare
 
     @jax.jit
     def f(x: jax.Array) -> jax.Array:
         return x
 
     compare(
-        op="op",
+        Workload(op="op", flops=1, nbytes=1, args=(jnp.zeros(1),)),
         variants={"v": f},
-        args=(jnp.zeros(1),),
-        flops=1,
-        nbytes=1,
         write_history=False,
     )
 
@@ -439,3 +419,123 @@ def test_compare_silent_for_sol_at_or_below_one(monkeypatch: pytest.MonkeyPatch)
 def _setup_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("benchmarks._history.HISTORY_DIR", tmp_path)
     monkeypatch.setattr("benchmarks._history.REPO_ROOT", tmp_path)
+
+
+def test_compare_rejects_unsupported_hardware() -> None:
+    """compare() must refuse a HardwarePeak that doesn't match the kernels
+    and constants the suite is tuned for. Without this guard, pointing
+    the bench harness at a v6e host (or hand-rolling a v5p HardwarePeak)
+    would silently emit fictional BW%/MFU%."""
+
+    @jax.jit
+    def f(x: jax.Array) -> jax.Array:
+        return x
+
+    fake = HardwarePeak(
+        kind="v6e",
+        bf16_flops=918e12,
+        f32_flops=459e12,
+        int8_ops=1836e12,
+        hbm_bw=1640e9,
+        ici_bw_per_link=400e9,
+        ici_links_per_chip=4,
+    )
+    with pytest.raises(NotImplementedError, match="v5e"):
+        compare(
+            Workload(op="op", flops=1, nbytes=1, args=(jnp.zeros(1),)),
+            variants={"v": f},
+            hw=fake,
+            write_history=False,
+        )
+
+
+def test_pallas_variant_rejects_kernel_without_block_shape_kwarg() -> None:
+    """Every Pallas kernel benched by compare()/sweep() must declare a
+    ``block_shape`` parameter — that's the repo-wide convention. A typo
+    (``block_size``, ``tile``) would otherwise produce a silent mis-bench:
+    a TypeError deep inside jax, or — worse — the kwarg landing in a
+    kernel that quietly uses its own default. ``pallas_variant()`` catches
+    the mismatch at construction so the error surfaces at the suite line
+    that names the kernel."""
+    from benchmarks.compare import pallas_variant
+
+    def kernel_without_block_shape(x: jax.Array, *, tile: int = 0) -> jax.Array:
+        return x
+
+    with pytest.raises(ValueError, match="block_shape"):
+        pallas_variant(kernel_without_block_shape, block_shape=(8,))
+
+
+def test_pallas_variant_returns_jit_wrapped_callable_with_block_shape_baked_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``pallas_variant(fn, block_shape=v)`` returns a jit-wrapped callable
+    that calls ``fn(*args, block_shape=v)`` — the block is a closed-over
+    Python static, not a traced input."""
+    from benchmarks.compare import pallas_variant
+
+    seen: list[tuple[int, ...]] = []
+
+    def kernel(x: jax.Array, *, block_shape: tuple[int, ...]) -> jax.Array:
+        seen.append(block_shape)
+        return x
+
+    variant = pallas_variant(kernel, block_shape=(64, 128))
+    variant(jnp.zeros(1))
+    assert seen == [(64, 128)]
+
+
+def test_compare_kwargs_param_is_keyword_only() -> None:
+    """``kwargs`` is reserved for the rare suite that wants to pass kernel
+    keyword arguments through to ``bench``/``lower``; nothing in this repo
+    uses it today. Keeping it keyword-only prevents a future suite from
+    silently binding a third positional dict to it — a 3-arg call that
+    *meant* something else (an ``is_valid``-style closure dict, perhaps)
+    would otherwise pass type-check and run the bench against the wrong
+    contract.
+    """
+
+    @jax.jit
+    def f(x: jax.Array) -> jax.Array:
+        return x
+
+    workload = Workload(op="op", flops=1, nbytes=1, args=(jnp.zeros(1),))
+    with pytest.raises(TypeError, match="positional"):
+        compare(workload, {"v": f}, {"some": "dict"})  # type: ignore[misc]
+
+
+def test_compare_can_bench_multiple_pallas_variants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The variants dict treats every entry uniformly — so a compare() can
+    pit two Pallas kernels (same op, different impls) against an XLA
+    baseline. This is the matmul curriculum step's actual flow:
+    ``pallas`` vs ``pipelined`` vs ``xla``. Without this, a Pallas pair
+    would need either two compare() calls or per-variant closures, both
+    of which fragment the bench history."""
+    from benchmarks.compare import pallas_variant
+
+    benched: list[str] = []
+
+    def fake_bench(name: str, **_kw: Any) -> BenchResult:
+        benched.append(name)
+        return BenchResult(name=name, times_s=[1e-3], warmup_iters=1, timed_iters=1)
+
+    monkeypatch.setattr("benchmarks.compare.bench", fake_bench)
+
+    def kernel_a(x: jax.Array, *, block_shape: tuple[int, ...]) -> jax.Array:
+        return x
+
+    def kernel_b(x: jax.Array, *, block_shape: tuple[int, ...]) -> jax.Array:
+        return x
+
+    compare(
+        Workload(op="myop", flops=1, nbytes=1, args=(jnp.zeros(1),)),
+        variants={
+            "xla": jax.jit(lambda x: x),
+            "pallas": pallas_variant(kernel_a, block_shape=(64, 128)),
+            "pipelined": pallas_variant(kernel_b, block_shape=(64, 128)),
+        },
+        write_history=False,
+    )
+    assert sorted(benched) == ["myop::pallas", "myop::pipelined", "myop::xla"]
