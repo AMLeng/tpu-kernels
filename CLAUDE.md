@@ -1,13 +1,45 @@
 # CLAUDE.md
 
-Agent-facing notes for the `tpu-kernels` repo. Human-facing docs and the
-copy-pasteable cookbook live in `README.md`.
+Agent-facing notes for the `tpu-kernels` repo. Human-facing docs live
+in `README.md` and `docs/`.
 
 ## What this project is
 
 JAX / Pallas kernels targeting TPU v5e, with a benchmarking harness built
-around roofline analysis (MFU% and HBM bandwidth %). Single-host v5e-8
-today; multi-host planned.
+around roofline analysis (MFU% and HBM bandwidth %). Any single-host
+v5e-N today; multi-host planned.
+
+## Audience
+
+Files split into two reading audiences. The distinction sets the bar for
+comments, boilerplate, and ceremony.
+
+**Human-facing** — read top-to-bottom by a person trying to understand
+the project, an op, or a result. Aim for concision, max-info comments
+(why, not what), minimal plumbing. Repeated boilerplate belongs in a
+helper, not inline.
+
+- `README.md` and everything under `docs/`
+- Everything under `src/tpu_kernels/ops/<op>/` — kernel modules and
+  `PERF.md`. `PERF.md`'s Bottleneck line is a single current
+  hypothesis, not a log of attempts.
+- `benchmarks/suites/<op>.py` — per-op CLI; should read as the op's bench
+  spec, not as plumbing
+- Commit messages (`git log` is read by humans)
+
+**Agent-facing** — loaded into context by an LLM, not skimmed by humans.
+Verbosity is fine; long *why* docstrings on internals are net-positive.
+The discipline that matters here is type-checking, tests, and
+regression-test-first per the harness rule below.
+
+- `benchmarks/{runner,roofline,compare,sweep,workload,_history,_pallas}.py`
+- `benchmarks/suites/_common.py`
+- `tests/**`
+- `CLAUDE.md` itself
+
+Rule of thumb: when adding a comment or factoring, ask which list the
+file is on. Move plumbing toward agent-facing helpers; keep human-facing
+files tight.
 
 ## Per-op workflow
 
@@ -87,7 +119,7 @@ from `[planned]` to `[done]` and link the new `PERF.md`.
   `validate_block_shapes` for the per-op axis-count check).
 - `benchmarks/suites/<op>.py` — one suite file per op.
 
-Run a suite: `uv run python -m benchmarks.suites.<op>`. The README cookbook
+Run a suite: `uv run python -m benchmarks.suites.<op>`. `docs/cookbook.md`
 has the full set of flags (`--dump-hlo`, `--profile-dir`, `--block`, etc.).
 
 ## Fixing a bug in the harness
@@ -105,17 +137,15 @@ Use `jax.random.normal(jax.random.key(0), shape, dtype)` for reproducible
 inputs. **Avoid `jnp.zeros` / `jnp.ones`** — XLA can constant-fold them and
 make a kernel look faster than it is.
 
-**Size inputs to ≥4× v5e VMEM (32 MiB → ≥128 MiB).** This is what
-actually defends per-call BW% accounting under unroll mode. Smaller
-inputs fit on chip; XLA can keep intermediates in VMEM across chained
-calls, so the program crosses HBM once for k calls and per-call BW%
-inflates by ~k. The unroll harness wraps chained values in
+**Size inputs to ≥4× v5e VMEM (32 MiB → ≥128 MiB).** Smaller inputs
+fit on chip — XLA keeps intermediates in VMEM across chained calls,
+so the program crosses HBM once for k calls and per-call BW% inflates
+by ~k. The unroll harness wraps chained values in
 `jax.lax.optimization_barrier` to block math fusion (e.g. `(((x+1)+1)+1)`
-collapsing to `x+3`), but the barrier doesn't force materialization
-through HBM — if the working set fits in VMEM the same accounting bug
-still happens. Sane input sizing is the only mechanism that prevents
-it. Suite-default tests (`tests/test_*_suite.py`) pin each suite's
-no-flag shape against this floor.
+collapsing to `x+3`), but the barrier doesn't force HBM round-trips.
+Sane input sizing is the only defense. Suite-default tests
+(`tests/test_*_suite.py`) pin each suite's no-flag shape against this
+floor.
 
 ## Tests
 
@@ -134,8 +164,11 @@ Run: `uv run pytest`. CPU-only runs skip TPU-marked tests.
 | Compute-bound       | ≥ 80% MFU               |
 | Mixed/attention-ish | ≥ 70% of speed-of-light |
 
-Tighten once a kernel has been measured and you know what's reachable on
-v5e for that shape.
+Each row sits just below the v5e plateau for its regime — clear the
+bar and the kernel is done. Use these as `Target` in `PERF.md` unless
+evidence specific to the kernel and shape says otherwise — and lower
+`Target` only when accumulated evidence (sweeps, profiling) shows the
+bar is unreachable on v5e for that shape.
 
 ## Conventions
 
@@ -154,6 +187,11 @@ Conventional commits, scoped by op when relevant:
 `docs(v5e): correct HBM bandwidth`. A perf-relevant commit should bundle
 the kernel edit, the new `bench_history/<op>/<timestamp>.json`, and the
 `PERF.md` update.
+
+Body documents *why*: the rule the change introduces, the bug it
+fixes, or the design choice it encodes. Per-file enumeration belongs
+in the diff. Use bullets rather than inline parens for any list of
+facts.
 
 Co-author trailer (when applicable): use the bare RFC form
 `Co-Authored-By: <Name> <email>`. **No parentheticals or annotations
@@ -177,8 +215,5 @@ parsers reject anything that isn't `Name <email>`).
 
 Kernel ordering and per-kernel rationale live in
 [`docs/curriculum.md`](docs/curriculum.md) — the source of truth for
-*what's planned next* and *why*. When a kernel lands, flip its entry there
-from `[planned]` to `[done]` and link the new `PERF.md`. Don't restate the
-list of upcoming kernels in this file; it would drift.
-
-Built so far: `scale` (memory-bound primer + harness validation).
+*what's planned next* and *why*. Don't restate the list of upcoming
+kernels in this file; it would drift.

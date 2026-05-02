@@ -46,33 +46,32 @@ push and PR.
 
 ---
 
-## Repo layout
+## Human-facing surface
 
-```
-src/tpu_kernels/
-  ops/<op>/           one directory per operation
-    naive.py          readable JAX — correctness oracle, never tuned
-    xla.py            tuned plain JAX — first speed-of-light attempt
-    pallas.py         Pallas kernel — only if XLA fell short
-    PERF.md           target, current %, bottleneck, next idea
+What a human reads or edits when iterating in this repo:
 
-benchmarks/
-  runner.py           warmup + N timed iters + stats
-  roofline.py         v5e peak constants, MFU & BW % math
-  compare.py          N-variant comparison, HLO dump, JSON history
-  suites/             one bench script per op
+- This `README.md` and everything under [`docs/`](docs/)
+- Everything under `src/tpu_kernels/ops/<op>/` — kernel modules and `PERF.md`
+- `benchmarks/suites/<op>.py` — the per-op CLI
+- `bench_history/<op>/` — JSON records of past runs (read-only)
 
-tests/
-  correctness/        allclose vs naive; uses interpret=True on CPU
-  perf/               threshold-gated regression tests, TPU-only
+Everything else is harness; agents maintain it.
 
-bench_history/<op>/   JSON results timestamped + git-stamped
-docs/                 curriculum, hardware reference, kernel patterns
-```
+---
 
-New top-level directories under `src/tpu_kernels/` are added when a real
-consumer lands (e.g. multi-host helpers when the first distributed op
-needs them) — not in advance.
+## Performance targets
+
+For each op, set a target percentage of speed-of-light in `PERF.md` and
+iterate until you hit it. Reasonable starting targets:
+
+| Regime               | Target                             |
+| -------------------- | ---------------------------------- |
+| Memory-bound op      | ≥ 80% HBM bandwidth                |
+| Compute-bound op     | ≥ 80% MFU                          |
+| Mixed/attention-ish  | ≥ 70% of speed-of-light            |
+
+Targets sit just below the v5e plateau — clear the bar and the kernel
+is done.
 
 ---
 
@@ -83,11 +82,8 @@ The loop, made concrete with the `scale` op:
 **1. Read the current state.**
 
 ```bash
-cat src/tpu_kernels/ops/scale/PERF.md
+cat src/tpu_kernels/ops/scale/PERF.md     # target, current %, bottleneck, next
 ```
-
-That four-line file tells you the target, where the kernel is now, what's
-believed to be the bottleneck, and what to try next.
 
 **2. Make a change** in `xla.py` or `pallas.py`.
 
@@ -127,22 +123,14 @@ tracking is just `ls bench_history/scale/`.
 uv run python -m benchmarks.suites.scale --dump-hlo
 ```
 
-**6. Profile on device** when the bench number doesn't match your model
-of the kernel:
+**6. Profile on device** when the bench number surprises you:
 
 ```bash
 uv run python -m benchmarks.suites.scale --profile-dir /tmp/scale_trace
-
-# Inspect the trace. Pick whichever you prefer:
-uv run xprof /tmp/scale_trace                     # full XProf UI on :8791
+uv run xprof /tmp/scale_trace                     # full UI on :8791
 # or drag /tmp/scale_trace/plugins/profile/*/*.trace.json.gz into
-# ui.perfetto.dev for a quick timeline view (no install, no server).
+# ui.perfetto.dev for a quick timeline.
 ```
-
-`xprof` is in the `dev` group, so a plain `uv sync` brings it in. It
-gives you the Op Profile, Memory Profile, Trace Viewer, and HLO graph —
-the views that actually report MFU / HBM% / step time. Perfetto only
-shows the timeline; use it for quick "what ran when" sanity checks.
 
 **7. Sweep a config knob.** For Pallas kernels, this is usually block
 shape. Use `--sweep-block`, which Cartesian-products the two lists,
@@ -168,96 +156,26 @@ and new next-thing-to-try. The history of what was tried lives in `git log`;
 
 ## Adding a new op
 
-The shape is fixed, which keeps the bench/test/history layer plug-and-play.
-For an op called `<name>`:
-
-```bash
-mkdir -p src/tpu_kernels/ops/<name>
-```
-
-Then create:
-
-```
-src/tpu_kernels/ops/<name>/__init__.py     # re-exports the variants
-src/tpu_kernels/ops/<name>/naive.py        # def <name>(x, ...) — obviously correct
-src/tpu_kernels/ops/<name>/xla.py          # tuned plain JAX, jit'd
-src/tpu_kernels/ops/<name>/pallas.py       # only if XLA fell short
-src/tpu_kernels/ops/<name>/PERF.md         # use docs/PERF_TEMPLATE.md
-tests/correctness/test_<name>.py           # parametrize over variants vs naive
-benchmarks/suites/<name>.py                # argparse CLI calling compare(...)
-```
-
-The simplest reference is `ops/scale/` — copy it, rename, replace the body.
-You don't have to write `pallas.py`. If `xla` already hits the target,
-note "xla is good enough" in `PERF.md` and move on.
-
-Run the new tests + bench:
-
-```bash
-uv run pytest tests/correctness/test_<name>.py
-uv run python -m benchmarks.suites.<name>
-```
+Usually agent work. The scaffolding contract — directory shape,
+required files, what `__init__.py` re-exports — lives in
+[`CLAUDE.md`](CLAUDE.md)'s "Adding a new op" section, which is what
+the agent reads. The next op to build is the first `[planned]` entry
+in [`docs/curriculum.md`](docs/curriculum.md).
 
 ---
 
 ## Cookbook
 
-```bash
-# ── Setup ─────────────────────────────────────────────────────────────
-uv sync --extra tpu                              # TPU VM
-uv sync                                          # CPU dev box
-
-# ── Tests ─────────────────────────────────────────────────────────────
-uv run pytest                                    # all correctness tests
-uv run pytest tests/correctness/test_scale.py    # one op
-uv run pytest -k pallas                          # all pallas variants
-uv run pytest -m "not perf"                      # skip TPU-only perf tests
-
-# ── Benchmarks ────────────────────────────────────────────────────────
-uv run python -m benchmarks.suites.scale         # default shape
-uv run python -m benchmarks.suites.scale --m 16384 --n 16384
-uv run python -m benchmarks.suites.scale --dtype bf16
-uv run python -m benchmarks.suites.scale --block 512 512
-uv run python -m benchmarks.suites.scale --dump-hlo
-uv run python -m benchmarks.suites.scale --profile-dir /tmp/trace
-uv run xprof /tmp/trace                          # open the trace at :8791
-
-# Cartesian sweep over (bm, bn) — one JSON record, sorted leaderboard,
-# divisibility-invalid shapes skipped instead of crashing the loop.
-uv run python -m benchmarks.suites.scale --sweep-block 8,16,32,64,128,256 128,256,512,1024
-
-# Diff the two most recent bench records for an op
-ls -t bench_history/scale/*.json | head -2 | xargs diff
-
-# ── Code quality ──────────────────────────────────────────────────────
-uv run ruff check .                              # lint
-uv run ruff format .                             # auto-format
-uv run pyright                                   # type-check
-```
-
----
-
-## What "good" looks like
-
-For each op, set a target percentage of speed-of-light in `PERF.md` and
-iterate until you hit it. Reasonable starting targets:
-
-| Regime               | Target                             |
-| -------------------- | ---------------------------------- |
-| Memory-bound op      | ≥ 80% HBM bandwidth                |
-| Compute-bound op     | ≥ 80% MFU                          |
-| Mixed/attention-ish  | ≥ 70% of speed-of-light            |
-
-These are starting points. Tighten them when you've actually measured a
-kernel and know what's reachable on v5e for that shape.
+Copy-pasteable command reference: [`docs/cookbook.md`](docs/cookbook.md).
 
 ---
 
 ## Hardware
 
 TPU v5e. See `docs/v5e_hw.md` for the per-chip peaks fed into the roofline
-math (197 TFLOP/s bf16, 819 GB/s HBM, 32 MiB VMEM, 128×128 MXU). Single-host
-v5e-8 works today; multi-host (`jax.distributed.initialize`) is planned.
+math (197 TFLOP/s bf16, 819 GB/s HBM, 32 MiB VMEM, 128×128 MXU). Any
+single-host v5e-N works today; multi-host (`jax.distributed.initialize`)
+is planned.
 
 ---
 
