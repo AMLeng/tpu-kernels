@@ -25,6 +25,11 @@ def git_sha() -> str | None:
     silently lies about that. The dirty check uses ``git status --porcelain``
     so untracked files count too (a forgotten ``.py`` in ``benchmarks/``
     would affect the run).
+
+    ``bench_history/`` itself is excluded from the porcelain check: it's
+    output, not input, so a JSON record from a previous run can't have
+    affected the run we're about to stamp. Without the exclude, two
+    back-to-back compare() calls would falsely mark the second one dirty.
     """
     try:
         head = subprocess.run(
@@ -38,7 +43,7 @@ def git_sha() -> str | None:
             return None
         sha = head.stdout.strip()
         status = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", "status", "--porcelain", "--", ".", ":(exclude)bench_history"],
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,

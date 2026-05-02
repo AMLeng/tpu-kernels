@@ -109,6 +109,40 @@ def test_git_sha_returns_none_outside_repo(tmp_path: Path, monkeypatch: pytest.M
     assert git_sha() is None
 
 
+def test_git_sha_clean_when_only_bench_history_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``bench_history/`` is *output*, never input — it can't have affected
+    the run that produced it. Without filtering it from the porcelain check,
+    a second compare() in the same shell sees the first run's untracked JSON
+    and stamps the second SHA dirty even though the kernel/harness code is
+    unchanged.
+    """
+    _init_repo(tmp_path)
+    history = tmp_path / "bench_history" / "op_a"
+    history.mkdir(parents=True)
+    (history / "1234.json").write_text("{}")
+    monkeypatch.setattr("benchmarks._history.REPO_ROOT", tmp_path)
+    sha = git_sha()
+    assert sha is not None
+    assert not sha.endswith("-dirty")
+
+
+def test_git_sha_dirty_when_bench_history_and_code_both_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Filtering bench_history/ must not mask real code changes alongside it."""
+    _init_repo(tmp_path)
+    (tmp_path / "f").write_text("modified")
+    history = tmp_path / "bench_history" / "op_a"
+    history.mkdir(parents=True)
+    (history / "1234.json").write_text("{}")
+    monkeypatch.setattr("benchmarks._history.REPO_ROOT", tmp_path)
+    sha = git_sha()
+    assert sha is not None
+    assert sha.endswith("-dirty")
+
+
 def _history_row() -> BenchRow:
     """Single fake (name, BenchResult, Roofline) triple for _write_history tests."""
     br = BenchResult(name="v", times_s=[1.0], warmup_iters=1, timed_iters=1)
