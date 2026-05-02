@@ -35,14 +35,21 @@ roofline math agree on a trivial kernel. No JAX or Pallas lesson beyond
 
 See [`ops/scale/PERF.md`](../src/tpu_kernels/ops/scale/PERF.md).
 
-### 1. rmsnorm — **[planned]**
+### 1. rmsnorm — **[done]**
 
-`xla.py` only. Add `pallas.py` only if XLA misses the regime target.
+Memory-bound row-wise reduction. **Why Pallas was needed even though
+the math obviously fuses**: XLA reads the input twice no matter how
+you write it — once for the mean-square reduction, once again for the
+normalize step — capping the XLA variant at 55% HBM BW. Pallas pulls
+each row-tile into VMEM once and reuses that single read for both the
+reduction and the output, hitting 80.2% under device timing. The 25pp
+delta is the whole reason Pallas exists for this kernel class. Also
+the first real exercise of `pallas_call` + grid + `BlockSpec` for a
+row-tiled reduction (one grid axis over rows, full hidden dim per
+tile so the reduction lives inside one block, `scale` loaded once via
+a constant index_map).
 
-**Why**: practices accumulator dtype (f32 inside, bf16 out), `lax.rsqrt`,
-and fusion behavior. Memory-bound; this is the lightest-weight kernel
-where dtype/precision choices visibly move the BW% number. Read the
-HLO afterward to confirm the chain fused into one elementwise loop.
+See [`ops/rmsnorm/PERF.md`](../src/tpu_kernels/ops/rmsnorm/PERF.md).
 
 ### 2. softmax — **[planned]**
 

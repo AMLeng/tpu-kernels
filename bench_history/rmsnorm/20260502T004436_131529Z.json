@@ -1,0 +1,89 @@
+{
+  "op": "rmsnorm",
+  "kind": "sweep",
+  "timestamp": "20260502T004436_131529Z",
+  "git_sha": "4c8a78c2b5051aa3e8806072ea9548898bf22e2e",
+  "hw": {
+    "bf16_flops": 197000000000000.0,
+    "f32_flops": 98000000000000.0,
+    "int8_ops": 393000000000000.0,
+    "hbm_bw": 819000000000.0,
+    "ici_bw_per_link": 200000000000.0,
+    "ici_links_per_chip": 4,
+    "num_chips": 1
+  },
+  "flops": 268435456,
+  "bytes": 268451840,
+  "flop_dtype": "bf16",
+  "config": {},
+  "sweep_axes": {
+    "bm": [
+      32,
+      64,
+      128,
+      256
+    ]
+  },
+  "skipped": [],
+  "errored": [
+    {
+      "config": {
+        "bm": 256
+      },
+      "error": "JaxRuntimeError('RESOURCE_EXHAUSTED: E1001: CompileTimeScopedVmemOom:\\nRan out of memory in memory space vmem while allocating on stack for %fn.1 = bf16[8192,8192]{1,0:T(8,128)(2,1)} custom-call(%args_0_.1, %args_1_.1), custom_call_target=\"tpu_custom_call\", operand_layout_constraints={bf16[8192,8192]{1,0}, bf16[8192]{0}}, frontend_attributes={kernel_metadata={}}, metadata={op_name=\"jit(looped)/jit(fn)/pallas_call\" stack_frame_id=5}. Scoped allocation with size 16.02M and limit 16.00M exceeded scoped vmem limit by 16.0K. It should not be possible to run out of scoped vmem - \\nSee https://openxla.org/xla/errors/error_1001 for more details.')"
+    }
+  ],
+  "variants": {
+    "bm=64": {
+      "config": {
+        "bm": 64
+      },
+      "median_s": 0.00041445260936257,
+      "p99_s": 0.0004619609064826591,
+      "min_s": 0.0004141046562722295,
+      "stdev_s": 5.998207748898963e-06,
+      "timing": "unroll",
+      "unroll": 32,
+      "cluster_mismatch": false,
+      "mfu": 0.003287749907075002,
+      "bw_util": 0.7908745584305804,
+      "ici_util": 0.0,
+      "sol_pct": 0.7908745584305805,
+      "binds": "memory"
+    },
+    "bm=128": {
+      "config": {
+        "bm": 128
+      },
+      "median_s": 0.00041450231248063574,
+      "p99_s": 0.0004611508500221362,
+      "min_s": 0.00041415965625901663,
+      "stdev_s": 5.916217776887318e-06,
+      "timing": "unroll",
+      "unroll": 32,
+      "cluster_mismatch": false,
+      "mfu": 0.003287355671827377,
+      "bw_util": 0.7907797243841367,
+      "ici_util": 0.0,
+      "sol_pct": 0.7907797243841367,
+      "binds": "memory"
+    },
+    "bm=32": {
+      "config": {
+        "bm": 32
+      },
+      "median_s": 0.0004196859062517433,
+      "p99_s": 0.0004208655968795938,
+      "min_s": 0.0004184096874837451,
+      "stdev_s": 5.373829318137987e-07,
+      "timing": "unroll",
+      "unroll": 32,
+      "cluster_mismatch": false,
+      "mfu": 0.0032467531256611545,
+      "bw_util": 0.7810127038752873,
+      "ici_util": 0.0,
+      "sol_pct": 0.7810127038752874,
+      "binds": "memory"
+    }
+  }
+}

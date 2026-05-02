@@ -22,7 +22,7 @@ import jax
 import jax.numpy as jnp
 from jax.experimental import pallas as pl
 
-DEFAULT_BLOCK = 16
+DEFAULT_BLOCK = 128
 
 
 def _rms_kernel(x_ref, scale_ref, o_ref, *, eps: float) -> None:

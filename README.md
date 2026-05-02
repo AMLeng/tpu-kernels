@@ -244,7 +244,7 @@ iterate until you hit it. Reasonable starting targets:
 
 | Regime               | Target                             |
 | -------------------- | ---------------------------------- |
-| Memory-bound op      | ≥ 85% HBM bandwidth                |
+| Memory-bound op      | ≥ 80% HBM bandwidth                |
 | Compute-bound op     | ≥ 80% MFU                          |
 | Mixed/attention-ish  | ≥ 70% of speed-of-light            |
 

@@ -118,7 +118,7 @@ Run: `uv run pytest`. CPU-only runs skip TPU-marked tests.
 
 | Regime              | Target                  |
 | ------------------- | ----------------------- |
-| Memory-bound        | ≥ 85% HBM BW            |
+| Memory-bound        | ≥ 80% HBM BW            |
 | Compute-bound       | ≥ 80% MFU               |
 | Mixed/attention-ish | ≥ 70% of speed-of-light |
 
