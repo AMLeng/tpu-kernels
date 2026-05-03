@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from functools import partial
 from typing import Any
 
 import jax
@@ -11,10 +12,15 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from tpu_kernels.ops.softmax import softmax_naive, softmax_xla
+from tpu_kernels.ops.softmax import softmax_naive, softmax_pallas, softmax_xla
 
+# Block sizes (4,) and (8,) divide both narrow (32, 256) and wide bf16
+# (8, 32768) shapes, exercising single-block (grid 1) and multi-block
+# (grid >1) lowerings across the two tests. Pallas runs on CPU via interpret=True.
 VARIANTS: dict[str, Callable[[jax.Array], jax.Array]] = {
     "xla": softmax_xla,
+    "pallas_b4": partial(softmax_pallas, block_shape=(4,), interpret=True),
+    "pallas_b8": partial(softmax_pallas, block_shape=(8,), interpret=True),
 }
 
 # bf16 is the project default working dtype (CLAUDE.md). It's also the only
@@ -105,3 +111,21 @@ def test_large_logits_dont_overflow() -> None:
     y = softmax_naive(x)
     assert jnp.all(jnp.isfinite(y)), "softmax overflowed; max-subtract is missing"
     np.testing.assert_allclose(np.asarray(y.sum(axis=-1)), 1.0, rtol=1e-5)
+
+
+def test_pallas_rejects_wrong_ndim() -> None:
+    x_3d = jnp.zeros((2, 4, 8), dtype=jnp.float32)
+    with pytest.raises(ValueError, match="2-D"):
+        softmax_pallas(x_3d, interpret=True)
+
+
+def test_pallas_rejects_wrong_block_ndim() -> None:
+    x = jnp.zeros((32, 256), dtype=jnp.float32)
+    with pytest.raises(ValueError, match="1-axis block_shape"):
+        softmax_pallas(x, block_shape=(8, 256), interpret=True)
+
+
+def test_pallas_rejects_unaligned_shape() -> None:
+    x_misaligned = jnp.zeros((30, 256), dtype=jnp.float32)
+    with pytest.raises(ValueError, match="not divisible"):
+        softmax_pallas(x_misaligned, block_shape=(4,), interpret=True)
