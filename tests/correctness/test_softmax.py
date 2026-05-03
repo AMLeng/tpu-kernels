@@ -63,6 +63,27 @@ def test_matches_naive(
     )
 
 
+@pytest.mark.parametrize("variant", VARIANTS.values(), ids=list(VARIANTS.keys()))
+def test_matches_naive_wide_bf16(
+    variant: Callable[[jax.Array], jax.Array],
+) -> None:
+    """Wide bf16 case for the f32-accumulator regression. The narrow
+    (32, 256) test_matches_naive shape is too short for a bf16 sum to
+    drift past rtol — at width 256 the partial sum stays well-resolved
+    in bf16, so a variant that accumulated the denominator in bf16
+    instead of f32 would still pass. 32768 is a realistic vocab-dim
+    width and reliably trips the failure mode: the partial sum grows
+    past the bf16 ulp at which O(1/N) terms round away."""
+    dtype, tol = DTYPES["bf16"]
+    x = jax.random.normal(jax.random.key(0), (8, 32768), dtype=dtype)
+    np.testing.assert_allclose(
+        np.asarray(variant(x)),
+        np.asarray(softmax_naive(x)),
+        rtol=tol["rtol"],
+        atol=tol["atol"],
+    )
+
+
 @pytest.mark.parametrize("dtype_name", list(DTYPES.keys()))
 def test_uniform_input_yields_uniform_output(dtype_name: str) -> None:
     """All-equal logits map to 1/N along the last axis. Pins normalization

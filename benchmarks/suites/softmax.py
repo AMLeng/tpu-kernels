@@ -6,11 +6,13 @@ With xprof trace: `... --profile-dir /tmp/softmax_trace`
     Then: `uv run xprof /tmp/softmax_trace` (full UI on :8791), or drag
     `<dir>/plugins/profile/*/*.trace.json.gz` into ui.perfetto.dev.
 
-Memory-bound. The lesson is whether XLA fuses the stable-form chain
-(max → sub → exp → sum → div) into a single elementwise loop — read
-``--dump-hlo`` to confirm. Only an xla variant is wired up at scaffold
-time; pallas joins (with --block / --sweep-block) only if XLA falls short
-of the 80% HBM BW target. See ``ops/softmax/PERF.md``.
+Memory-bound. ``naive`` (jit-wrapped, two reductions over x) and
+``xla`` (online softmax, one paired reduction) bench side-by-side —
+the comparison shows whether the saved read of x materializes once
+XLA lowers the custom ``lax.reduce``. Read ``--dump-hlo`` to inspect
+the fusion. Pallas joins (with --block / --sweep-block) only if the
+better of the two falls short of the 80% HBM BW target. See
+``ops/softmax/PERF.md``.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ import jax.numpy as jnp
 from benchmarks.compare import compare
 from benchmarks.suites._common import base_parser
 from benchmarks.workload import Workload
-from tpu_kernels.ops.softmax import softmax_xla
+from tpu_kernels.ops.softmax import softmax_naive, softmax_xla
 
 
 def _make_parser() -> argparse.ArgumentParser:
@@ -54,7 +56,7 @@ def main() -> None:
 
     compare(
         workload,
-        variants={"xla": softmax_xla},
+        variants={"naive": softmax_naive, "xla": softmax_xla},
         dump_hlo=args.dump_hlo,
         profile_dir=args.profile_dir,
         timing=args.timing,
