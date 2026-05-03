@@ -51,14 +51,27 @@ a constant index_map).
 
 See [`ops/rmsnorm/PERF.md`](../src/tpu_kernels/ops/rmsnorm/PERF.md).
 
-### 2. softmax — **[planned]**
+### 2. softmax — **[done]**
 
-`xla.py` only. Add `pallas.py` only if XLA misses the regime target.
+Memory-bound stable-form chain (max → sub → exp → sum → div). **Two
+levers, stacked**:
 
-**Why**: practices fusion across the stable-form chain
-(max → sub → exp → sum → div, ideally as one kernel). Memory-bound; XLA
-usually fuses this, but `--dump-hlo` is the actual exercise — verify it
-fused, identify the breaks if it didn't.
+- *JAX-side*: rewrite as **online softmax** — one streaming pass
+  carrying `(running max, running sum)` and renormalizing on each new
+  max. Folds two reductions into one and lets XLA fuse the divide on
+  the reduction's output. Lifted naive 42.8% → xla 55.6% HBM BW.
+- *Pallas*: stalls at the same 55% wall as rmsnorm-xla, for the same
+  reason — XLA reads x twice (once for the paired reduction, once for
+  the divide). Tile by full rows so the `(bm, hidden)` slab lives in
+  VMEM end-to-end; max/sub/exp/sum/div all run on the resident copy.
+  Hits 80.2% BW. Once the row is resident the online recurrence is
+  unnecessary — single-pass naive form inside the kernel suffices, and
+  the online algorithm becomes the lesson cashed in at flash attention.
+
+Pallas mechanics mirror rmsnorm exactly: one grid axis over rows, full
+hidden dim per tile so the reduction lives inside one block.
+
+See [`ops/softmax/PERF.md`](../src/tpu_kernels/ops/softmax/PERF.md).
 
 ### 3. matmul (tiled bf16) — **[planned]**
 

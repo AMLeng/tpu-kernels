@@ -1,0 +1,72 @@
+{
+  "op": "softmax",
+  "kind": "sweep",
+  "timestamp": "20260503T013552_656689Z",
+  "git_sha": "74ad3c9b4da33aca7543269b9e45eeb16bbe9bac",
+  "hw": {
+    "kind": "v5e",
+    "bf16_flops": 197000000000000.0,
+    "f32_flops": 98000000000000.0,
+    "int8_ops": 393000000000000.0,
+    "hbm_bw": 819000000000.0,
+    "ici_bw_per_link": 200000000000.0,
+    "ici_links_per_chip": 4,
+    "num_chips": 1
+  },
+  "flops": 268435456,
+  "bytes": 268435456,
+  "flop_dtype": "bf16",
+  "config": {},
+  "sweep_axes": {
+    "bm": [
+      64,
+      128,
+      256
+    ]
+  },
+  "skipped": [],
+  "errored": [
+    {
+      "config": {
+        "bm": 256
+      },
+      "error": "JaxRuntimeError('RESOURCE_EXHAUSTED: E1001: CompileTimeScopedVmemOom:\\nRan out of memory in memory space vmem while allocating on stack for %softmax.1 = bf16[8192,8192]{1,0:T(8,128)(2,1)} custom-call(%x.1), custom_call_target=\"tpu_custom_call\", operand_layout_constraints={bf16[8192,8192]{1,0}}, frontend_attributes={kernel_metadata={}}, metadata={op_name=\"jit(softmax)/pallas_call\" stack_frame_id=8}. Scoped allocation with size 23.80M and limit 16.00M exceeded scoped vmem limit by 7.80M. It should not be possible to run out of scoped vmem - \\nSee https://openxla.org/xla/errors/error_1001 for more details.')"
+    }
+  ],
+  "variants": {
+    "bm=128": {
+      "config": {
+        "bm": 128
+      },
+      "median_s": 0.00040884600000000004,
+      "p99_s": 0.00041037853,
+      "min_s": 0.000408131,
+      "stdev_s": 4.859638929623881e-07,
+      "timing": "device",
+      "unroll": 1,
+      "cluster_mismatch": false,
+      "mfu": 0.003332835659193881,
+      "bw_util": 0.8016710926266112,
+      "ici_util": 0.0,
+      "sol_pct": 0.8016710926266112,
+      "binds": "memory"
+    },
+    "bm=64": {
+      "config": {
+        "bm": 64
+      },
+      "median_s": 0.0004089855,
+      "p99_s": 0.0004095832700000001,
+      "min_s": 0.00040841900000000003,
+      "stdev_s": 3.349263862560316e-07,
+      "timing": "device",
+      "unroll": 1,
+      "cluster_mismatch": false,
+      "mfu": 0.0033316988693212397,
+      "bw_util": 0.8013976523275753,
+      "ici_util": 0.0,
+      "sol_pct": 0.8013976523275752,
+      "binds": "memory"
+    }
+  }
+}
