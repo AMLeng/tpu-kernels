@@ -27,10 +27,14 @@ VARIANTS: dict[str, Callable[..., jax.Array]] = {
 # dtype where the f32 K-accumulator inside naive does work — at f32 the
 # internal astype is a no-op, so an f32-only suite would silently accept a
 # regression that dropped the f32 accumulation. f32 stays as a tight-tolerance
-# check on the rest of the chain (dot + cast).
+# check on the rest of the chain (dot + cast); 5e-5 leaves room for
+# reduction-tree differences between naive's single length-K dot and a
+# Pallas variant's K/bk partial sums (worst-case forward error scales with
+# K·eps_f32 ≈ 3e-5 at K=256), which differ in the last few ulps depending
+# on how the host LLVM build orders the summation.
 DTYPES: dict[str, tuple[Any, dict[str, float]]] = {
     "bf16": (jnp.bfloat16, {"rtol": 2e-2, "atol": 1e-2}),
-    "f32": (jnp.float32, {"rtol": 1e-5, "atol": 1e-5}),
+    "f32": (jnp.float32, {"rtol": 5e-5, "atol": 5e-5}),
 }
 
 
