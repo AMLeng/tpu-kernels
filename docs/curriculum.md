@@ -73,23 +73,33 @@ hidden dim per tile so the reduction lives inside one block.
 
 See [`ops/softmax/PERF.md`](../src/tpu_kernels/ops/softmax/PERF.md).
 
-### 3. matmul (tiled bf16) — **[planned]**
+### 3. matmul (tiled bf16) — **[done]**
 
-**Both** `xla.py` and `pallas.py`. The only step where both variants are
-mandatory.
+The documented exception to "skip Pallas when XLA hits target." At
+(8192, 8192, 8192) bf16 the v5e MXU is so close to its plateau that
+naive, xla, and pallas all land at ~95% MFU within noise; pallas does
+not beat xla and isn't expected to. It ships anyway as the teaching
+artifact for the tiled-MXU pattern flash attention will reuse.
 
-**Why** (`xla.py`): exercises `dot_general(precision=...)`, bf16 vs
-bf16-with-f32-accumulator tradeoff, einsum reorder. The cheapest place to
-feel how precision flags affect both correctness and speed.
+**Why** (`xla.py`): a one-line `jnp.matmul`. `Precision.DEFAULT` on bf16
+inputs already drives the MXU at native rate (bf16 multiplies, f32
+accumulator), so the JAX baseline clears the 80% MFU bar with no
+rewrite. Higher precisions (`HIGH` / `HIGHEST`) emulate wider products
+on the MXU — they're the `--dump-hlo` exercise the curriculum cares
+about, not a default the variant uses.
 
-**Why** (`pallas.py`): first MXU exposure via `lax.dot_general` inside
-a Pallas kernel. Teaches accumulator handling and 128×128 tile shapes.
-Worth writing even when `xla` wins — the MXU practice is a prerequisite
-for flash attention.
+**Why** (`pallas.py`): first MXU exposure inside a Pallas kernel, via
+`jnp.dot(..., preferred_element_type=jnp.float32)`. Teaches the 3-axis
+grid (M/N/K), a VMEM-resident f32 scratch accumulator, and the
+`pl.when(program_id(2) == 0)` / `pl.when(program_id(2) == num_programs(2)-1)`
+guards that zero-init the accumulator on the first K-step and flush it
+to the output on the last. The kernel-visible block at the default
+shape lands at (1024, 1024, 512) — the (1024, 1024, 1024) cube that
+would in theory go further OOMs the 16 MiB scoped VMEM limit, so K=512
+is the sweet spot. The 128×128 MXU sublane/lane tile sits below this
+block and is the compiler's concern.
 
-A follow-up `pallas_pipelined.py` adds `pltpu.emit_pipeline` plus
-double-buffering once the un-pipelined Pallas version is benched. The
-delta between them is the lesson on async DMA.
+See [`ops/matmul/PERF.md`](../src/tpu_kernels/ops/matmul/PERF.md).
 
 ### 4. mha_eager (full attention, no flash) — **[planned]**
 
@@ -139,10 +149,11 @@ fulfilled.
 - **Skip Pallas for memory-bound unary elementwise after `scale`.** XLA
   fuses `silu`, `dropout`, and friends perfectly; there's no learning in
   those Pallas kernels.
-- **Don't add follow-up variants until the baseline is benched.** E.g.
-  don't start `pallas_pipelined.py` for matmul until the un-pipelined
-  Pallas version has a `bench_history/` entry. The delta between them
-  *is* the lesson.
+- **Don't add follow-up variants until the baseline is benched.** A
+  pipelined or double-buffered Pallas variant only earns its place as
+  the *delta* against an un-pipelined version that already has a
+  `bench_history/` entry — that delta is the lesson on async DMA.
+  Without the baseline, the comparison is unanchored.
 - **Read the HLO at every JAX-side step.** Without `--dump-hlo` you can't
   tell whether your reformulation helped or hurt — you'll be guessing.
 - **Update this file when a kernel lands.** Status flips from `[planned]`

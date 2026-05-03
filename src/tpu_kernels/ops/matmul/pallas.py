@@ -14,8 +14,11 @@ dtype — the same convention naive/xla follow at the language level.
 ``block_shape`` is a 3-tuple ``(bm, bn, bk)`` — the repo-wide Pallas
 convention is one tuple under the parameter name ``block_shape``, so
 the bench harness can validate the spelling and bake the value in via
-``pallas_variant``. ``DEFAULT_BLOCK = (128, 128, 128)`` is the minimum
-MXU-aligned cube; tuning lives in the suite's ``--sweep-block``.
+``pallas_variant``. ``DEFAULT_BLOCK = (1024, 1024, 512)`` is the
+sweep-winning cube on v5e at the (8192, 8192, 8192) bf16 shape — the
+larger ``(1024, 1024, 1024)`` cube OOMs VMEM (18.4 MiB scratch + tiles
+exceeds the 16 MiB scoped limit), so 512 on the K axis is the sweet
+spot. Re-tune via the suite's ``--sweep-block`` for other shapes.
 
 This module exposes a plain function — bench/test sites jit it themselves
 (the bench captures ``block_shape`` in a closure, the correctness tests
@@ -29,7 +32,7 @@ import jax.numpy as jnp
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 
-DEFAULT_BLOCK = (128, 128, 128)
+DEFAULT_BLOCK = (1024, 1024, 512)
 
 
 def _matmul_kernel(a_ref, b_ref, o_ref, acc_ref) -> None:
