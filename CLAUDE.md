@@ -6,8 +6,9 @@ in `README.md` and `docs/`.
 ## What this project is
 
 JAX / Pallas kernels targeting TPU v5e, with a benchmarking harness built
-around roofline analysis (MFU% and HBM bandwidth %). Any single-host
-v5e-N today; multi-host planned.
+around roofline analysis (MFU% and HBM bandwidth %). Single-host v5e-N
+today; multi-host scale-out is gated to start before Stage C (the MLP
+stage) of the curriculum (see [`docs/curriculum.md`](docs/curriculum.md)).
 
 ## Audience
 
@@ -56,6 +57,18 @@ not in `PERF.md`.
 
 If `xla.py` already hits the target, **stop**. Don't write Pallas just
 because the slot exists; it must beat `xla` in `compare` to justify itself.
+
+**Layer-level ops** (Stage C onwards in the curriculum). Some op
+directories — the MLP variants and parts of attention — are
+*layer-level*: their `pallas.py` doesn't ship a single Pallas kernel
+but composes already-built kernels (matmul + activation + collective)
+with compute-comm overlap. The naive/xla/pallas variant contract still
+applies (naive: eager JAX layer, the oracle; xla: composed JAX layer
+without overlap; pallas: composed Pallas layer with async DMA hiding
+comm). `PERF.md` `Target` becomes end-to-end *layer MFU*, and the
+`Workload`'s flops/nbytes count the entire composition including
+cross-chip traffic. The "must beat xla in compare" rule still holds —
+but here the win is overlap, not raw kernel speed.
 
 ## After modifying a kernel
 
@@ -167,6 +180,8 @@ Run: `uv run pytest`. CPU-only runs skip TPU-marked tests.
 | Memory-bound        | ≥ 80% HBM BW            |
 | Compute-bound       | ≥ 80% MFU               |
 | Mixed/attention-ish | ≥ 70% of speed-of-light |
+| Cross-chip (Stage B)| ≥ 80% ICI BW            |
+| Layer-level (Stage C)| compute-bound row, end-to-end |
 
 Each row sits just below the v5e plateau for its regime — clear the
 bar and the kernel is done. Use these as `Target` in `PERF.md` unless
