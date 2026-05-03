@@ -27,10 +27,10 @@ def test_block_default_matches_kernel_default_block() -> None:
     )
 
 
-def test_timing_default_matches_bench_default() -> None:
-    """No-flag run uses bench()'s default mode (unroll)."""
+def test_timing_default_matches_perf_md_mode() -> None:
+    """No-flag run matches the mode PERF.md Current is measured in (device)."""
     args = _make_parser().parse_args([])
-    assert args.timing == "unroll"
+    assert args.timing == "device"
 
 
 def test_timing_flag_accepts_device() -> None:

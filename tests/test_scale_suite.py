@@ -30,12 +30,12 @@ def test_block_default_matches_kernel_default_block() -> None:
     )
 
 
-def test_timing_default_matches_bench_default() -> None:
-    """No-flag run uses bench()'s default mode (unroll). ``PERF.md`` Current
-    is measured under that mode; switching defaults silently would make a
-    no-flag run report a different number."""
+def test_timing_default_matches_perf_md_mode() -> None:
+    """No-flag run matches the mode ``PERF.md`` Current is measured in
+    (device). Drift between the two means a no-flag run silently reports
+    a different number."""
     args = _make_parser().parse_args([])
-    assert args.timing == "unroll"
+    assert args.timing == "device"
 
 
 def test_timing_flag_accepts_device() -> None:

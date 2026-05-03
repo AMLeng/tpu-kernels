@@ -13,12 +13,12 @@ from benchmarks.roofline import V5E_VMEM_CAPACITY
 from benchmarks.suites.softmax import _make_parser
 
 
-def test_timing_default_matches_bench_default() -> None:
-    """No-flag run uses bench()'s default mode (unroll). PERF.md Current is
-    measured under that mode; switching defaults silently would make a
-    no-flag run report a different number than PERF.md claims."""
+def test_timing_default_matches_perf_md_mode() -> None:
+    """No-flag run matches the mode PERF.md Current is measured in (device).
+    Drift between the two means a no-flag run silently reports a different
+    number than PERF.md claims."""
     args = _make_parser().parse_args([])
-    assert args.timing == "unroll"
+    assert args.timing == "device"
 
 
 def test_timing_flag_accepts_device() -> None:

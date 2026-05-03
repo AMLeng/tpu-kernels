@@ -46,8 +46,11 @@ def base_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--timing",
         choices=["unroll", "device"],
-        default="unroll",
-        help="Timing mode forwarded to bench(); device-mode is TPU-only.",
+        default="device",
+        help=(
+            "Timing mode forwarded to bench(). Default `device` matches "
+            "PERF.md and requires a TPU; pass `--timing unroll` for CPU."
+        ),
     )
     # Single block geometry, one int per axis. Each suite sets its
     # kernel's DEFAULT_BLOCK as the no-flag value via set_defaults.

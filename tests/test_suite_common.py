@@ -50,7 +50,7 @@ def test_base_parser_no_flag_defaults() -> None:
     assert args.dtype == "bf16"
     assert args.dump_hlo is False
     assert args.profile_dir is None
-    assert args.timing == "unroll"
+    assert args.timing == "device"
     assert args.block is None
     assert args.sweep_block is None
 
