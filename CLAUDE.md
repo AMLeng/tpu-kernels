@@ -60,10 +60,14 @@ because the slot exists; it must beat `xla` in `compare` to justify itself.
 ## After modifying a kernel
 
 1. `uv run pytest tests/correctness/test_<op>.py` — must pass.
-2. `uv run python -m benchmarks.suites.<op>` — re-bench (TPU only; CPU
-   numbers from `interpret=True` are not meaningful).
-3. Update `PERF.md`: new `Current %`, new `Bottleneck` hypothesis, new `Next`.
-4. The new `bench_history/<op>/<timestamp>.json` is part of the commit.
+2. Commit the kernel edit.
+3. `uv run python -m benchmarks.suites.<op>` against the now-clean
+   tree (TPU only; CPU numbers from `interpret=True` are not
+   meaningful).
+4. Commit the JSON + `PERF.md` `Current %`. The split keeps the JSON's
+   stamped SHA tied to the tree it benched — bench-then-edit stamps a
+   SHA whose tree no longer matches HEAD, and edit-then-bench stamps
+   `-dirty`.
 
 ## After any change
 
@@ -184,9 +188,9 @@ bar is unreachable on v5e for that shape.
 
 Conventional commits, scoped by op when relevant:
 `feat(scale): add Pallas variant`, `perf(rmsnorm): tile by (8, 128)`,
-`docs(v5e): correct HBM bandwidth`. A perf-relevant commit should bundle
-the kernel edit, the new `bench_history/<op>/<timestamp>.json`, and the
-`PERF.md` update.
+`docs(v5e): correct HBM bandwidth`. A perf-relevant kernel edit lands
+in two commits — kernel first, then JSON + `PERF.md` `Current %`
+second. See "After modifying a kernel" for the rationale.
 
 Body documents *why*: the rule the change introduces, the bug it
 fixes, or the design choice it encodes. Per-file enumeration belongs
