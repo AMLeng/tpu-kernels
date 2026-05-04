@@ -41,9 +41,12 @@ def _make_parser() -> argparse.ArgumentParser:
     base parser are unused at this stage — they activate when the Pallas
     variant lands."""
     parser = argparse.ArgumentParser(parents=[base_parser()])
-    parser.add_argument("--vocab", type=int, default=32 * 1024, help="parameter table rows")
+    # Defaults match Llama 3.1 8B: vocab=128256 (Llama 3 tokenizer), hidden=4096.
+    # m is the per-call index count (= batch * seq for an LM forward pass);
+    # 8192 is a typical 1-batch 8K-context inference shape.
+    parser.add_argument("--vocab", type=int, default=128256, help="parameter table rows")
     parser.add_argument(
-        "--hidden", type=int, default=8192, help="parameter table cols / output dim"
+        "--hidden", type=int, default=4096, help="parameter table cols / output dim"
     )
     parser.add_argument("--m", type=int, default=8192, help="number of indices to look up")
     return parser

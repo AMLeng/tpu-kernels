@@ -28,7 +28,8 @@ V5E_F32_PEAK_FLOPS = 98e12
 V5E_INT8_PEAK_OPS = 393e12  # 393 TOPS, for int8 matmul
 V5E_HBM_BANDWIDTH = 819e9  # 819 GB/s
 V5E_HBM_CAPACITY = 16 * 1024**3  # 16 GiB
-V5E_VMEM_CAPACITY = 32 * 1024**2  # 32 MiB (per TensorCore)
+V5E_VMEM_CAPACITY = 128 * 1024**2  # 128 MiB (per TensorCore; cross-checked vs pltpu.get_tpu_info)
+V5E_SMEM_CAPACITY = 1 * 1024**2  # 1 MiB scalar scratchpad (per TensorCore)
 V5E_ICI_PER_LINK = 200e9  # 200 GB/s per link (1600 Gbps), torus topology
 V5E_ICI_LINKS_PER_CHIP = 4  # 2D torus: 2 links per axis, 2 axes
 

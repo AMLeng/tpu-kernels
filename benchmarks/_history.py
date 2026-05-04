@@ -26,10 +26,16 @@ def git_sha() -> str | None:
     so untracked files count too (a forgotten ``.py`` in ``benchmarks/``
     would affect the run).
 
-    ``bench_history/`` itself is excluded from the porcelain check: it's
-    output, not input, so a JSON record from a previous run can't have
-    affected the run we're about to stamp. Without the exclude, two
-    back-to-back compare() calls would falsely mark the second one dirty.
+    Two paths are excluded from the porcelain check:
+
+    * ``bench_history/`` — output, not input. A JSON record from a previous
+      run can't have affected the run we're about to stamp; without the
+      exclude, back-to-back compare() calls would falsely mark the second
+      one dirty.
+    * ``tests/`` — also not bench input. Test code doesn't change kernel
+      behavior or bench output, so iterating on a test (e.g. tightening a
+      threshold, adding ``@pytest.mark.xfail``) shouldn't invalidate
+      JSONs taken under the same kernel code.
     """
     try:
         head = subprocess.run(
@@ -43,7 +49,15 @@ def git_sha() -> str | None:
             return None
         sha = head.stdout.strip()
         status = subprocess.run(
-            ["git", "status", "--porcelain", "--", ".", ":(exclude)bench_history"],
+            [
+                "git",
+                "status",
+                "--porcelain",
+                "--",
+                ".",
+                ":(exclude)bench_history",
+                ":(exclude)tests",
+            ],
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,

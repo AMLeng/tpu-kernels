@@ -1,4 +1,10 @@
-"""Unit tests for benchmarks/roofline.py — pure logic, no JAX needed."""
+"""Unit tests for benchmarks/roofline.py — pure logic, no JAX needed.
+
+The TPU-marked test at the bottom is the exception: it cross-checks our
+hardcoded constants against ``pltpu.get_tpu_info()`` so any drift between
+this file and JAX's own canonical numbers shows up loudly. CPU runs
+auto-skip it via conftest.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +18,8 @@ from benchmarks.roofline import (
     V5E_ICI_LINKS_PER_CHIP,
     V5E_ICI_PER_LINK,
     V5E_INT8_PEAK_OPS,
+    V5E_SMEM_CAPACITY,
+    V5E_VMEM_CAPACITY,
     HardwarePeak,
     analyze,
     check_supported_hardware,
@@ -272,3 +280,38 @@ def test_check_supported_hardware_skips_tpu_check_on_gpu_or_other(
     the model. Only the kind-field check fires."""
     _patch_devices(monkeypatch, [_FakeDevice(platform="gpu", device_kind="NVIDIA A100")])
     check_supported_hardware(v5e())  # no raise
+
+
+@pytest.mark.tpu
+def test_v5e_vmem_capacity_matches_runtime() -> None:
+    """Catch drift between V5E_VMEM_CAPACITY and JAX's own per-generation
+    constant in ``pltpu.get_tpu_info()``. Running on a real v5e is the
+    authoritative cross-check — the runtime answer reflects whatever the
+    XLA:TPU compiler will actually allow you to allocate."""
+    from jax.experimental.pallas import tpu as pltpu
+
+    info = pltpu.get_tpu_info()
+    chip = info.chip_version.value  # pyright: ignore[reportAttributeAccessIssue]
+    assert chip == "v5e", f"this test must run on v5e; got {chip}"
+    assert info.vmem_capacity_bytes == V5E_VMEM_CAPACITY, (
+        f"V5E_VMEM_CAPACITY={V5E_VMEM_CAPACITY} ({V5E_VMEM_CAPACITY / 2**20:.0f} MiB) "
+        f"but runtime reports {info.vmem_capacity_bytes} "
+        f"({info.vmem_capacity_bytes / 2**20:.0f} MiB). Update roofline.py."
+    )
+
+
+@pytest.mark.tpu
+def test_v5e_smem_capacity_matches_runtime() -> None:
+    """Same idea as the VMEM cross-check but for SMEM (the 32-bit scalar
+    scratchpad). Used today only by ``benchmarks/probe_hardware.py``;
+    pinning it here so a future v5p/v6e port catches the change."""
+    from jax.experimental.pallas import tpu as pltpu
+
+    info = pltpu.get_tpu_info()
+    chip = info.chip_version.value  # pyright: ignore[reportAttributeAccessIssue]
+    assert chip == "v5e", f"this test must run on v5e; got {chip}"
+    assert info.smem_capacity_bytes == V5E_SMEM_CAPACITY, (
+        f"V5E_SMEM_CAPACITY={V5E_SMEM_CAPACITY} ({V5E_SMEM_CAPACITY / 2**10:.0f} KiB) "
+        f"but runtime reports {info.smem_capacity_bytes} "
+        f"({info.smem_capacity_bytes / 2**10:.0f} KiB). Update roofline.py."
+    )

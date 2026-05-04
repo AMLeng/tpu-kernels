@@ -147,6 +147,45 @@ def test_git_sha_dirty_when_bench_history_and_code_both_changed(
     assert sha.endswith("-dirty")
 
 
+def test_git_sha_clean_when_only_tests_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tests are not bench inputs — they don't affect kernel behavior or
+    bench output, so a modified test file shouldn't taint the SHA. This
+    lets us iterate on tests (e.g. tightening thresholds, adding xfails)
+    without invalidating bench JSONs taken under the same kernel code."""
+    _init_repo(tmp_path)
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_x.py").write_text("def test_x(): assert True")
+    subprocess.run(["git", "add", "tests/test_x.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add test"], cwd=tmp_path, check=True)
+    (tests / "test_x.py").write_text("def test_x(): assert False")  # tracked test edit
+    monkeypatch.setattr("benchmarks._history.REPO_ROOT", tmp_path)
+    sha = git_sha()
+    assert sha is not None
+    assert not sha.endswith("-dirty")
+
+
+def test_git_sha_dirty_when_tests_and_code_both_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Excluding tests/ must not mask real code changes alongside it
+    (sibling to ``..._when_bench_history_and_code_both_changed``)."""
+    _init_repo(tmp_path)
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_x.py").write_text("def test_x(): assert True")
+    subprocess.run(["git", "add", "tests/test_x.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add test"], cwd=tmp_path, check=True)
+    (tests / "test_x.py").write_text("def test_x(): assert False")
+    (tmp_path / "f").write_text("modified")  # real code change alongside
+    monkeypatch.setattr("benchmarks._history.REPO_ROOT", tmp_path)
+    sha = git_sha()
+    assert sha is not None
+    assert sha.endswith("-dirty")
+
+
 def _history_row() -> BenchRow:
     """Single fake (name, BenchResult, Roofline) triple for _write_history tests."""
     br = BenchResult(name="v", times_s=[1.0], warmup_iters=1, timed_iters=1)

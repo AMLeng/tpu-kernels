@@ -154,7 +154,7 @@ Use `jax.random.normal(jax.random.key(0), shape, dtype)` for reproducible
 inputs. **Avoid `jnp.zeros` / `jnp.ones`** — XLA can constant-fold them and
 make a kernel look faster than it is.
 
-**Size inputs to ≥4× v5e VMEM (32 MiB → ≥128 MiB).** Smaller inputs
+**Size inputs to ≥4× v5e VMEM (128 MiB → ≥512 MiB).** Smaller inputs
 fit on chip — XLA keeps intermediates in VMEM across chained calls,
 so the program crosses HBM once for k calls and per-call BW% inflates
 by ~k. The unroll harness wraps chained values in

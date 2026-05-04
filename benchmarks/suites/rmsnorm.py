@@ -32,7 +32,7 @@ from tpu_kernels.ops.rmsnorm.pallas import DEFAULT_BLOCK
 def _make_parser() -> argparse.ArgumentParser:
     """Add op-specific shape flags and pin ``--block`` to ``DEFAULT_BLOCK``."""
     parser = argparse.ArgumentParser(parents=[base_parser()])
-    parser.add_argument("--bs", type=int, default=8192, help="leading (batch * seq) dim")
+    parser.add_argument("--bs", type=int, default=32768, help="leading (batch * seq) dim")
     parser.add_argument("--hidden", type=int, default=8192)
     parser.set_defaults(block=list(DEFAULT_BLOCK))
     return parser

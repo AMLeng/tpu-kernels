@@ -35,9 +35,9 @@ from tpu_kernels.ops.matmul.pallas import DEFAULT_BLOCK
 def _make_parser() -> argparse.ArgumentParser:
     """Add op-specific shape flags and pin ``--block`` to ``DEFAULT_BLOCK``."""
     parser = argparse.ArgumentParser(parents=[base_parser()])
-    parser.add_argument("--m", type=int, default=8192, help="output rows / a leading dim")
-    parser.add_argument("--n", type=int, default=8192, help="output cols / b trailing dim")
-    parser.add_argument("--k", type=int, default=8192, help="contracting dim")
+    parser.add_argument("--m", type=int, default=16384, help="output rows / a leading dim")
+    parser.add_argument("--n", type=int, default=16384, help="output cols / b trailing dim")
+    parser.add_argument("--k", type=int, default=16384, help="contracting dim")
     parser.set_defaults(block=list(DEFAULT_BLOCK))
     return parser
 
