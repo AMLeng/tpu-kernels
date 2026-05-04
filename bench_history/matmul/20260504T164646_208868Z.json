@@ -1,0 +1,75 @@
+{
+  "op": "matmul",
+  "kind": "compare",
+  "timestamp": "20260504T164646_208868Z",
+  "git_sha": "ce68961d657d5657bd89717aa91bb73d8e6b7541",
+  "hw": {
+    "kind": "v5e",
+    "bf16_flops": 197000000000000.0,
+    "f32_flops": 98000000000000.0,
+    "int8_ops": 393000000000000.0,
+    "hbm_bw": 819000000000.0,
+    "ici_bw_per_link": 200000000000.0,
+    "ici_links_per_chip": 4,
+    "num_chips": 1
+  },
+  "flops": 8796093022208,
+  "bytes": 1610612736,
+  "ici_bytes": 0,
+  "flop_dtype": "bf16",
+  "config": {
+    "m": 16384,
+    "n": 16384,
+    "k": 16384,
+    "dtype": "bf16",
+    "block_shape": [
+      1024,
+      1024,
+      512
+    ]
+  },
+  "variants": {
+    "naive": {
+      "median_s": 0.0461694215,
+      "p99_s": 0.04617097795,
+      "min_s": 0.046167643,
+      "stdev_s": 9.2943604151259e-07,
+      "timing": "device",
+      "unroll": 1,
+      "cluster_mismatch": false,
+      "mfu": 0.9670950368490677,
+      "bw_util": 0.04259442837541547,
+      "ici_util": 0.0,
+      "sol_pct": 0.9670950368490677,
+      "binds": "compute"
+    },
+    "xla": {
+      "median_s": 0.046169448,
+      "p99_s": 0.04617153463000001,
+      "min_s": 0.046168717000000005,
+      "stdev_s": 7.571548040978881e-07,
+      "timing": "device",
+      "unroll": 1,
+      "cluster_mismatch": false,
+      "mfu": 0.9670944817629753,
+      "bw_util": 0.04259440392737893,
+      "ici_util": 0.0,
+      "sol_pct": 0.9670944817629753,
+      "binds": "compute"
+    },
+    "pallas": {
+      "median_s": 0.046768870500000004,
+      "p99_s": 0.04677110534000001,
+      "min_s": 0.046767077000000004,
+      "stdev_s": 9.204145447622985e-07,
+      "timing": "device",
+      "unroll": 1,
+      "cluster_mismatch": false,
+      "mfu": 0.9546995236252848,
+      "bw_util": 0.04204848430573317,
+      "ici_util": 0.0,
+      "sol_pct": 0.9546995236252848,
+      "binds": "compute"
+    }
+  }
+}
