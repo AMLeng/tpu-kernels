@@ -111,18 +111,31 @@ block and is the compiler's concern.
 
 See [`ops/matmul/PERF.md`](../src/tpu_kernels/ops/matmul/PERF.md).
 
-### A.5. embedding lookup — **[planned]**
+### A.5. embedding lookup — **[done]**
 
 Memory-bound gather: read selected rows of a parameter table at
-integer indices. **Why Pallas was needed**: introduces data-dependent
-indexing inside a kernel — `pl.dynamic_slice` against runtime-supplied
-offsets, or a runtime-driven `BlockSpec` `index_map`. XLA's `jnp.take`
-already saturates HBM (a pure gather has nothing to fuse), so following
-the matmul precedent the Pallas variant matches rather than beats it
-and ships as a teaching artifact: the indexing pattern returns at
-Stage D's paged steps as `block_table` lookups, and adding it to
-Stage A means the block_table lesson lands with prior practice rather
-than cold.
+integer indices. **What turned out to matter**: not the kernel choice
+but the *layout* the table lives in. Ships as two ops, one per layout:
+
+- `embedding_lookup` ([`PERF.md`](../src/tpu_kernels/ops/embedding_lookup/PERF.md))
+  takes the natural 2-D `T(8, 128)(2, 1)` form. HBM stores the array
+  as 2 KiB tiles holding 8 rows interleaved per tile, and Mosaic only
+  emits tile-aligned DMAs against tiled refs — so a single-row read
+  isn't expressible from Pallas (the lowering pass rejects sub-tile
+  slice ops; sub-tile reads would need scatter-gather across the
+  tile's striped bytes, which the hardware can do but Mosaic doesn't
+  generate). The Pallas variant is structurally capped near 12.5% BW
+  (slab-and-permute) and lands at ~11%. XLA's `gather_custom_fusion`
+  (kCustom, C++) reaches ~33% by mechanisms unreachable from JAX
+  surface — Pallas loses to XLA on this layout.
+- `embedding_lookup_packed` ([`PERF.md`](../src/tpu_kernels/ops/embedding_lookup_packed/PERF.md))
+  takes a 4-D `(vocab, hidden//1024, 8, 128)` form whose natural
+  Mosaic layout is byte-equivalent to 1-D `T(1024)(128)(2, 1)`. Each
+  row's bytes are contiguous in HBM and span an integer number of
+  tiles, so per-row DMAs are tile-aligned. Pallas does explicit
+  read-many / write-one DMAs (per-row reads HBM→VMEM, one bulk
+  VMEM→HBM per grid step), reaching ~69% and edging out XLA's own
+  staged gather (~65%).
 
 ### A.6. segment cumsum — **[planned]**
 

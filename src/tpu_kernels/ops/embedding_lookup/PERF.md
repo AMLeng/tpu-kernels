@@ -1,7 +1,7 @@
 # Embedding lookup
 
 Target: match XLA at ~32% HBM BW @ (vocab=128256, hidden=4096, M=8192), bf16
-Current: not measured yet (kernel just landed; bench in a follow-up commit)
+Current: xla 32.7% / pallas 10.6% HBM BW on v5e (memory-bound), 2026-05-06. xla clears the target; pallas lands ~2pp below the 12.5% structural cap (slab-and-permute kernel adds VMEM-compute overhead beyond the read-DMA waste).
 Bottleneck: HBM tiling + Mosaic DMA emission. XLA stores
 TensorCore-bound bf16 tensors in `T(8, 128)(2, 1)` layout: 2 KiB HBM
 tiles holding 8 rows interleaved per tile. Mosaic only emits
