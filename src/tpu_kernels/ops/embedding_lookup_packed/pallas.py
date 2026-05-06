@@ -9,9 +9,12 @@ fetch one row in one shot.
 
 The kernel uses a **read-many / write-one** structure per grid step:
 
-1. Issue ``bm`` async per-row reads HBM → VMEM scratch (random ``ids``,
-   so the reads are unavoidably one-per-id; 4-semaphore fan-out
-   pipelines them).
+1. Issue ``bm`` async per-row reads HBM → VMEM scratch on a single DMA
+   sem (random ``ids``, so the reads are unavoidably one-per-id), then
+   drain with one ``make_async_copy(scratch, scratch, sem).wait()``.
+   Mosaic derives the wait byte-count from the descriptor's ref shape;
+   the scratch ref's total bytes equal the sum of all ``bm`` DMA
+   transfers, so one ``.wait()`` drains the sem.
 2. After all reads are in VMEM, issue **one bulk async DMA** of
    ``bm * hidden`` bytes VMEM → HBM, writing the consecutive output
    rows for this grid step in one shot.
@@ -42,7 +45,6 @@ from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 
 DEFAULT_BLOCK = (128,)
-NUM_SEMS = 4
 
 
 def _emb_kernel(
@@ -50,26 +52,25 @@ def _emb_kernel(
     params_flat_ref,
     o_flat_ref,
     scratch,
-    *sems,
+    sem,
+    *,
     bm: int,
     hidden: int,
 ) -> None:
     i = pl.program_id(0)
 
-    # Phase 1 — per-row reads HBM -> VMEM scratch, fan-out across
-    # NUM_SEMS semaphores so the small DMAs pipeline.
-    read_copies = []
+    # Phase 1 — per-row reads HBM -> VMEM scratch, all on one sem.
+    # The wait byte-count is derived from the descriptor's ref shape;
+    # passing scratch as both src and dst makes that count equal the
+    # total transferred bytes, so one .wait() drains the sem.
     for k in range(bm):
         row_id = ids_ref[i * bm + k]
-        copy = pltpu.make_async_copy(
+        pltpu.make_async_copy(
             src_ref=params_flat_ref.at[pl.ds(row_id * hidden, hidden)],
             dst_ref=scratch.at[pl.ds(k * hidden, hidden)],
-            sem=sems[k % NUM_SEMS],
-        )
-        copy.start()
-        read_copies.append(copy)
-    for copy in read_copies:
-        copy.wait()
+            sem=sem,
+        ).start()
+    pltpu.make_async_copy(scratch, scratch, sem).wait()
 
     # Phase 2 — single bulk write VMEM -> HBM. One DMA setup cost,
     # one large contiguous transfer; amortizes the per-DMA overhead
@@ -77,7 +78,7 @@ def _emb_kernel(
     bulk_copy = pltpu.make_async_copy(
         src_ref=scratch,
         dst_ref=o_flat_ref.at[pl.ds(i * bm * hidden, bm * hidden)],
-        sem=sems[0],
+        sem=sem,
     )
     bulk_copy.start()
     bulk_copy.wait()
@@ -129,7 +130,7 @@ def embedding_lookup(
             out_specs=pl.BlockSpec(memory_space=pltpu.HBM),
             scratch_shapes=[
                 pltpu.VMEM((bm * hidden,), params.dtype),
-                *([pltpu.SemaphoreType.DMA] * NUM_SEMS),
+                pltpu.SemaphoreType.DMA,
             ],
         ),
         interpret=interpret,

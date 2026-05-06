@@ -13,7 +13,11 @@ must be 8-row slabs.
 So the kernel processes ids in 8-id chunks. For each chunk:
 
 1. Read 8 slabs (each ``(8, hidden)``) from HBM into VMEM — one slab
-   per id, async, semaphore fan-out.
+   per id, async, all sharing a single DMA semaphore. Drain with one
+   ``make_async_copy(scratch, scratch, sem).wait()`` — Mosaic derives
+   the wait byte-count from the descriptor's ref shape, and the
+   scratch ref's total bytes equal the sum of all issued DMAs, so
+   one ``.wait()`` drains the sem.
 2. Build the chunk's output ``(8, hidden)`` block in VMEM by, for each
    of the 8 ids, multiplying its slab by a ``(8, 8)`` one-hot
    permutation matrix that picks ``sub_id = id % 8`` and places it at
@@ -47,7 +51,6 @@ from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 
 DEFAULT_BLOCK = (128,)
-NUM_SEMS = 4
 PAGE_ROWS = 8  # natural bf16 outer sublane tile size; the slab unit
 
 
@@ -57,27 +60,28 @@ def _emb_kernel(
     o_ref,
     scratch_slab,
     scratch_out,
-    *sems,
+    sem,
+    *,
     bm: int,
     hidden: int,
 ) -> None:
     i = pl.program_id(0)
     n_chunks = bm // PAGE_ROWS
 
-    # Phase 1 — issue bm async slab reads HBM -> VMEM scratch_slab.
-    read_copies = []
+    # Phase 1 — issue bm async slab reads HBM -> VMEM scratch_slab,
+    # all on a single sem. The wait byte-count is derived from the
+    # descriptor's ref shape; passing scratch_slab as both src and
+    # dst makes that count equal the total transferred bytes, so one
+    # .wait() drains all bm DMAs.
     for k in range(bm):
         row_id = ids_ref[i * bm + k]
         tile_idx = row_id // PAGE_ROWS
-        copy = pltpu.make_async_copy(
+        pltpu.make_async_copy(
             src_ref=params_ref.at[pl.ds(tile_idx * PAGE_ROWS, PAGE_ROWS)],
             dst_ref=scratch_slab.at[k],
-            sem=sems[k % NUM_SEMS],
-        )
-        copy.start()
-        read_copies.append(copy)
-    for copy in read_copies:
-        copy.wait()
+            sem=sem,
+        ).start()
+    pltpu.make_async_copy(scratch_slab, scratch_slab, sem).wait()
 
     # Phase 2 — build each chunk's (8, hidden) output block in VMEM.
     # For sub in 0..7, build a (8, 8) permute matrix one-hot at (sub, sub_id),
@@ -101,19 +105,16 @@ def _emb_kernel(
             )
         scratch_out[c] = chunk_out.astype(scratch_slab.dtype)
 
-    # Phase 3 — write 8-row chunks to HBM. Sems can be reused: phase 1
-    # waits drained them and the compute phase has no async DMAs.
-    write_copies = []
+    # Phase 3 — write 8-row chunks to HBM, sharing the same sem
+    # (phase 1's wait drained it). scratch_out's total bytes equal
+    # the n_chunks writes' total, so one same-ref wait drains the sem.
     for c in range(n_chunks):
-        copy = pltpu.make_async_copy(
+        pltpu.make_async_copy(
             src_ref=scratch_out.at[c],
             dst_ref=o_ref.at[pl.ds(i * bm + c * PAGE_ROWS, PAGE_ROWS)],
-            sem=sems[c % NUM_SEMS],
-        )
-        copy.start()
-        write_copies.append(copy)
-    for copy in write_copies:
-        copy.wait()
+            sem=sem,
+        ).start()
+    pltpu.make_async_copy(scratch_out, scratch_out, sem).wait()
 
 
 def embedding_lookup(
@@ -160,7 +161,7 @@ def embedding_lookup(
             scratch_shapes=[
                 pltpu.VMEM((bm, PAGE_ROWS, hidden), params.dtype),
                 pltpu.VMEM((bm // PAGE_ROWS, PAGE_ROWS, hidden), params.dtype),
-                *([pltpu.SemaphoreType.DMA] * NUM_SEMS),
+                pltpu.SemaphoreType.DMA,
             ],
         ),
         interpret=interpret,
