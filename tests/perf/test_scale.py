@@ -74,8 +74,7 @@ def test_scale_pallas_device_timing_higher_bw_than_unroll() -> None:
     assert device.timing == "device"
     assert device.unroll == 1
     assert not device.cluster_mismatch, (
-        "XPlane parse split timed iters into a different number of clusters "
-        "than expected; gap_ns may need bumping for this kernel."
+        "XPlane parse returned a different number of XLA Modules events than expected timed iters."
     )
 
     nbytes = 2 * m * n * bytes_per_elem

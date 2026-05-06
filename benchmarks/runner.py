@@ -18,7 +18,6 @@ with ``uv run xprof <profile_dir>``.
 
 from __future__ import annotations
 
-import itertools
 import math
 import os
 import shutil
@@ -48,9 +47,10 @@ class BenchResult:
     unroll: int = 1  # k actually used; 1 under timing="device"
     timing: Literal["unroll", "device"] = "unroll"
     # device-mode only: True iff the XPlane parse produced a different
-    # number of clusters than ``timed_iters``. Surfaces a transient
-    # warning into the persisted bench history record so a downstream
-    # trend tool can flag the run rather than have it slide by silently.
+    # number of XLA Modules events than ``timed_iters``. Field name kept
+    # for backward compat with persisted bench history JSON. Surfaces a
+    # transient warning into the record so a downstream trend tool can
+    # flag the run rather than have it slide by silently.
     cluster_mismatch: bool = False
 
     @property
@@ -84,7 +84,6 @@ def bench(
     *,
     timing: Literal["unroll", "device"] = "unroll",
     chain: Any = _CHAIN_DEFAULT,
-    gap_ns: int | None = None,
 ) -> BenchResult:
     """Run ``fn(*args, **kwargs)`` repeatedly and collect per-iter times.
 
@@ -96,13 +95,9 @@ def bench(
     new_kwargs)`` for full control. Default ``chain=0``.
 
     With ``timing="device"``, k is fixed at 1 and per-call times come
-    from the TPU hardware clock (XPlane parse). ``chain`` has no effect
-    and passing it raises. TPU-only. ``gap_ns`` overrides the inter-event
-    gap (ns) above which two XLA Ops events are treated as separate
-    program executions; default tracks ``_EXECUTION_GAP_NS`` (100µs).
-    Bump it for kernels with intra-program idle (unfused multi-stage
-    HLO, async collective waits) that splits a single iter into multiple
-    clusters.
+    from the TPU hardware clock — one event per call on the XPlane's
+    ``XLA Modules`` line, ``duration_ns`` is wall time. ``chain`` has no
+    effect there and passing it raises. TPU-only.
     """
     kwargs = kwargs or {}
 
@@ -126,15 +121,8 @@ def bench(
             warmup=warmup,
             iters=iters,
             profile_dir=profile_dir,
-            gap_ns=gap_ns if gap_ns is not None else _EXECUTION_GAP_NS,
         )
 
-    if gap_ns is not None:
-        raise ValueError(
-            "gap_ns controls the device-mode XPlane cluster boundary; it "
-            "has no meaning under timing='unroll'. Pass gap_ns only with "
-            "timing='device'."
-        )
     chain_spec: ChainSpec = 0 if chain is _CHAIN_DEFAULT else chain
     return _bench_unroll(
         name,
@@ -313,12 +301,6 @@ def _choose_k(t1_s: float, target_s: float = 0.010, k_max: int = 1024) -> int:
 
 # ---- device path (TPU-only) ---------------------------------------------
 
-# Inter-event gap (ns) above which we treat events as belonging to different
-# program executions. Between bench iterations there's >>100µs of host idle
-# (Python loop overhead alone is ~1ms); within a single fused HLO program
-# events are back-to-back (sub-µs gaps). 100µs cleanly separates the two.
-_EXECUTION_GAP_NS = 100_000
-
 # (start_ns, end_ns, duration_ns).
 _EventTuple = tuple[int, int, int]
 
@@ -332,14 +314,13 @@ def _bench_device(
     warmup: int,
     iters: int,
     profile_dir: str | None,
-    gap_ns: int,
 ) -> BenchResult:
     """Run iters timed calls inside jax.profiler.trace; read durations
     off the device clock by parsing the resulting XPlane.
 
     Single call per timed iter (no chaining): each iter is one program
-    execution, recorded as one cluster of XLA Ops events on the TPU
-    plane. Per-call duration is the sum of those events' durations.
+    execution, recorded as one event on the TPU plane's ``XLA Modules``
+    line. Per-call duration is that event's ``duration_ns``.
     """
     # Compile + warmup outside the trace so first-call overhead doesn't
     # pollute the recorded events.
@@ -353,7 +334,7 @@ def _bench_device(
         with jax.profiler.trace(capture_dir):
             for _ in range(iters):
                 jax.block_until_ready(fn(*args, **kwargs))
-        durations, mismatch = _parse_xplane_durations(capture_dir, expected=iters, gap_ns=gap_ns)
+        durations, mismatch = _parse_xplane_durations(capture_dir, expected=iters)
     finally:
         if not user_supplied_dir:
             # Cheap cleanup: only remove the temp dir we created. If the
@@ -375,33 +356,32 @@ def _bench_device(
 def _parse_xplane_durations(
     profile_dir: str,
     expected: int,
-    *,
-    gap_ns: int,
 ) -> tuple[list[float], bool]:
-    """Find xplane.pb in profile_dir, return durations (s) and mismatch flag.
+    """Find xplane.pb in profile_dir, return per-iter durations (s) and a
+    count-mismatch flag.
 
-    ``mismatch`` is True iff the parsed cluster count != ``expected``;
-    callers stash it on BenchResult so trend tooling can spot a run
-    where the gap heuristic miscounted iters.
+    Reads the TPU plane's ``XLA Modules`` line, where each event represents
+    one program execution from launch to completion. ``mismatch`` is True
+    iff the number of module events != ``expected``; callers stash it on
+    BenchResult so trend tooling can spot a run where the parse went sideways.
     """
     from jax.profiler import ProfileData
 
     xplane_path = _find_xplane(profile_dir)
     pd = ProfileData.from_file(xplane_path)
-    events = _xla_ops_events(pd)
+    events = _xla_module_events(pd)
     if not events:
         raise RuntimeError(
-            f"no XLA Ops events in {xplane_path}; XPlane was empty or the "
-            "TPU plane has a different name on this hardware."
+            f"no XLA Modules events in {xplane_path}; XPlane was empty or "
+            "the TPU plane has a different name on this hardware."
         )
-    clusters = _cluster_events_by_gap(events, gap_ns=gap_ns)
-    durations = _durations_from_clusters(clusters)
+    durations = [e[2] * 1e-9 for e in events]
     mismatch = len(durations) != expected
     if mismatch:
         warnings.warn(
             f"timing='device': expected {expected} program executions, "
-            f"got {len(durations)} clusters from XPlane. Bump gap_ns= or "
-            "use timing='unroll'. cluster_mismatch=True on the result.",
+            f"got {len(durations)} XLA Modules events from XPlane. "
+            "cluster_mismatch=True on the result.",
             stacklevel=3,
         )
     return durations, mismatch
@@ -417,15 +397,14 @@ def _find_xplane(profile_dir: str) -> str:
     raise FileNotFoundError(f"no *.xplane.pb under {profile_dir}")
 
 
-def _xla_ops_events(pd: Any) -> list[_EventTuple]:
-    """Pull (start_ns, end_ns, duration_ns) for events from the *single* TPU
-    plane's XLA Ops line. Returns [] if no TPU plane has events.
+def _events_from_line(pd: Any, line_name: str) -> list[_EventTuple]:
+    """Collect events from a named line on the single active TPU plane.
 
-    Single-chip-only today: if events are present on more than one TPU
-    plane we raise rather than silently pick one, since BW% derived from
-    one chip's events would understate a sharded execution. Sharded
-    suites need to coalesce across planes — defer until the first
-    multi-chip suite lands.
+    Returns [] if no TPU plane has events on that line. Single-chip-only:
+    if events are present on more than one TPU plane we raise rather than
+    silently pick one, since BW% derived from one chip's events would
+    understate a sharded execution. Multi-chip support waits for the first
+    sharded suite.
     """
     found: list[tuple[str, list[_EventTuple]]] = []
     for plane in pd.planes:
@@ -434,7 +413,7 @@ def _xla_ops_events(pd: Any) -> list[_EventTuple]:
         if "TPU" not in plane.name:
             continue
         for line in plane.lines:
-            if line.name != "XLA Ops":
+            if line.name != line_name:
                 continue
             events = [(int(e.start_ns), int(e.end_ns), int(e.duration_ns)) for e in line.events]
             if events:
@@ -444,45 +423,26 @@ def _xla_ops_events(pd: Any) -> list[_EventTuple]:
     if len(found) > 1:
         names = [name for name, _ in found]
         raise RuntimeError(
-            f"timing='device' found XLA Ops events on multiple TPU planes "
+            f"timing='device' found {line_name!r} events on multiple TPU planes "
             f"({names}); sharded execution isn't supported yet. Run on a "
             "single chip or extend the parser to coalesce planes."
         )
     return found[0][1]
 
 
-def _cluster_events_by_gap(
-    events: Sequence[_EventTuple],
-    gap_ns: int,
-) -> list[list[_EventTuple]]:
-    """Group events into per-execution clusters by inter-event gap.
+def _xla_module_events(pd: Any) -> list[_EventTuple]:
+    """Per-program-execution events from the TPU plane's XLA Modules line.
 
-    Sorts by start_ns first; a gap > ``gap_ns`` between prev_end and next_start
-    closes the current cluster.
+    Each event is one full program execution: ``start_ns`` is launch,
+    ``end_ns`` is completion, ``duration_ns`` is the wall time of that
+    execution. There is exactly one module event per ``iters`` and the
+    line has no nesting, so per-iteration durations are read off directly
+    without clustering or summing. The XLA Ops line is sibling-and-children
+    HLO ops; reading durations from it double-counts when the program
+    contains an HLO ``while`` (e.g. ``lax.scan``), since the parent op's
+    duration covers its children's.
     """
-    sorted_events = sorted(events, key=lambda e: e[0])
-    if not sorted_events:
-        return []
-    clusters: list[list[_EventTuple]] = [[sorted_events[0]]]
-    for prev, cur in itertools.pairwise(sorted_events):
-        if cur[0] - prev[1] > gap_ns:
-            clusters.append([cur])
-        else:
-            clusters[-1].append(cur)
-    return clusters
-
-
-def _durations_from_clusters(
-    clusters: Sequence[Sequence[_EventTuple]],
-) -> list[float]:
-    """Per-cluster duration (seconds): sum of event durations.
-
-    We sum event ``duration_ns`` (device-active time) rather than
-    ``last_end - first_start``, which would also count idle gaps within
-    a cluster — for fused HLO that difference is negligible but for
-    multi-op programs it matters.
-    """
-    return [sum(e[2] for e in cluster) * 1e-9 for cluster in clusters]
+    return _events_from_line(pd, "XLA Modules")
 
 
 def _has_tpu() -> bool:
