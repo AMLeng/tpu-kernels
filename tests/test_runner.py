@@ -16,6 +16,7 @@ from benchmarks.runner import (
     _build_unrolled,
     _choose_k,
     _find_xplane,
+    _per_call_durations,
     _xla_module_events,
     bench,
 )
@@ -411,6 +412,66 @@ def test_xla_module_events_raises_on_multiple_tpu_planes_with_events() -> None:
     )
     with pytest.raises(RuntimeError, match=r"(?i)multiple.*tpu|sharded"):
         _xla_module_events(pd)
+
+
+# ---- _per_call_durations: cluster XLA Modules events per Python call ----
+
+
+def test_per_call_durations_one_module_per_call_returns_per_event_duration() -> None:
+    """Behavior preserved from the prior fix: every previously-benched op
+    (scale, rmsnorm, softmax, matmul, embedding_lookup) dispatches one XLA
+    program per Python call, so events are 1:1 with iters and the
+    per-call duration is the event's own duration_ns.
+    """
+    events = [
+        (0, 60_000_000, 60_000_000),
+        (70_000_000, 130_000_000, 60_000_000),
+    ]
+    durations, mismatch = _per_call_durations(events, iters=2)
+    assert durations == pytest.approx([0.060, 0.060])
+    assert mismatch is False
+
+
+def test_per_call_durations_clusters_n_modules_per_call_for_multi_module_lowerings() -> None:
+    """Regression for the cumsum_xla device-timing bug: a triangular
+    ``reduce_window`` (jnp.cumsum's default lowering) is rewritten on TPU
+    into a 3-level sequential scan that runs as 3 XLA programs per
+    Python call. Events are 3*iters with no nesting; the per-call
+    duration is the sum of each consecutive 3-event group.
+
+    Pre-fix, _parse_xplane_durations returned the raw 3*iters list and
+    BenchResult.median_s collapsed to ~one sub-module's duration —
+    underreporting per-call time by ~3x and inflating reported BW%.
+    """
+    events = [
+        # call 0: 3 modules totalling 60ms
+        (0, 20_000_000, 20_000_000),
+        (20_000_000, 40_000_000, 20_000_000),
+        (40_000_000, 60_000_000, 20_000_000),
+        # call 1: 3 modules totalling 60ms
+        (70_000_000, 90_000_000, 20_000_000),
+        (90_000_000, 110_000_000, 20_000_000),
+        (110_000_000, 130_000_000, 20_000_000),
+    ]
+    durations, mismatch = _per_call_durations(events, iters=2)
+    assert durations == pytest.approx([0.060, 0.060])
+    assert mismatch is False
+
+
+def test_per_call_durations_marks_mismatch_when_count_doesnt_divide_iters() -> None:
+    """Parse went sideways or modules-per-call varied across iters —
+    either way the clustering can't be trusted. Surface mismatch=True
+    and return raw event durations so a downstream trend tool can flag
+    the run rather than silently consume wrong numbers.
+    """
+    events = [
+        (0, 10_000_000, 10_000_000),
+        (10_000_000, 20_000_000, 10_000_000),
+        (20_000_000, 30_000_000, 10_000_000),
+    ]
+    durations, mismatch = _per_call_durations(events, iters=2)
+    assert mismatch is True
+    assert durations == pytest.approx([0.010, 0.010, 0.010])
 
 
 # Keep jax import live (avoids "imported but unused" if all tests above are

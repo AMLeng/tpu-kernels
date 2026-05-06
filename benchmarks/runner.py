@@ -46,11 +46,12 @@ class BenchResult:
     timed_iters: int
     unroll: int = 1  # k actually used; 1 under timing="device"
     timing: Literal["unroll", "device"] = "unroll"
-    # device-mode only: True iff the XPlane parse produced a different
-    # number of XLA Modules events than ``timed_iters``. Field name kept
-    # for backward compat with persisted bench history JSON. Surfaces a
-    # transient warning into the record so a downstream trend tool can
-    # flag the run rather than have it slide by silently.
+    # device-mode only: True iff the XLA Modules event count did not
+    # divide evenly into ``timed_iters`` per-call buckets — either the
+    # XPlane parse went sideways or modules-per-call varied across iters.
+    # Field name kept for backward compat with persisted bench history
+    # JSON. Surfaces a transient warning into the record so a downstream
+    # trend tool can flag the run rather than have it slide by silently.
     cluster_mismatch: bool = False
 
     @property
@@ -95,9 +96,12 @@ def bench(
     new_kwargs)`` for full control. Default ``chain=0``.
 
     With ``timing="device"``, k is fixed at 1 and per-call times come
-    from the TPU hardware clock — one event per call on the XPlane's
-    ``XLA Modules`` line, ``duration_ns`` is wall time. ``chain`` has no
-    effect there and passing it raises. TPU-only.
+    from the TPU hardware clock by parsing the XPlane's ``XLA Modules``
+    line and clustering events into per-call buckets — a single jit'd
+    call may dispatch more than one XLA program (e.g. cumsum's
+    triangular reduce_window runs as 3 sequential scan levels per
+    call). ``chain`` has no effect there and passing it raises.
+    TPU-only.
     """
     kwargs = kwargs or {}
 
@@ -318,9 +322,11 @@ def _bench_device(
     """Run iters timed calls inside jax.profiler.trace; read durations
     off the device clock by parsing the resulting XPlane.
 
-    Single call per timed iter (no chaining): each iter is one program
-    execution, recorded as one event on the TPU plane's ``XLA Modules``
-    line. Per-call duration is that event's ``duration_ns``.
+    Single Python call per timed iter (no chaining), but a single call
+    may dispatch more than one XLA program (e.g. cumsum's triangular
+    reduce_window lowers to a 3-level sequential scan). Per-call
+    duration is the sum of consecutive ``XLA Modules`` events grouped
+    into ``iters`` buckets — modules don't nest, so the sum is exact.
     """
     # Compile + warmup outside the trace so first-call overhead doesn't
     # pollute the recorded events.
@@ -357,13 +363,17 @@ def _parse_xplane_durations(
     profile_dir: str,
     expected: int,
 ) -> tuple[list[float], bool]:
-    """Find xplane.pb in profile_dir, return per-iter durations (s) and a
-    count-mismatch flag.
+    """Find xplane.pb in profile_dir, return per-call durations (s) and a
+    cluster-mismatch flag.
 
-    Reads the TPU plane's ``XLA Modules`` line, where each event represents
-    one program execution from launch to completion. ``mismatch`` is True
-    iff the number of module events != ``expected``; callers stash it on
-    BenchResult so trend tooling can spot a run where the parse went sideways.
+    Reads the TPU plane's ``XLA Modules`` line and groups consecutive
+    events into ``expected`` per-call buckets via ``_per_call_durations``.
+    A jit'd Python call may dispatch more than one XLA program (e.g.
+    cumsum's triangular reduce_window lowers to 3 sequential scan
+    levels), so events are not 1:1 with iters in general. ``mismatch``
+    is True when the event count doesn't divide evenly by ``expected``;
+    callers stash it on BenchResult so trend tooling can spot a run
+    where the parse went sideways.
     """
     from jax.profiler import ProfileData
 
@@ -375,16 +385,47 @@ def _parse_xplane_durations(
             f"no XLA Modules events in {xplane_path}; XPlane was empty or "
             "the TPU plane has a different name on this hardware."
         )
-    durations = [e[2] * 1e-9 for e in events]
-    mismatch = len(durations) != expected
+    durations, mismatch = _per_call_durations(events, expected)
     if mismatch:
         warnings.warn(
-            f"timing='device': expected {expected} program executions, "
-            f"got {len(durations)} XLA Modules events from XPlane. "
-            "cluster_mismatch=True on the result.",
+            f"timing='device': expected {expected} per-call durations from "
+            f"XLA Modules events, got {len(events)} events that don't "
+            f"divide evenly by {expected}. cluster_mismatch=True on the "
+            "result.",
             stacklevel=3,
         )
     return durations, mismatch
+
+
+def _per_call_durations(
+    events: list[_EventTuple],
+    iters: int,
+) -> tuple[list[float], bool]:
+    """Cluster sequential XLA Modules events into per-Python-call durations.
+
+    A single jit'd call may dispatch more than one XLA program. The
+    common case is 1:1 with iters (every previously-benched op). The
+    multi-program case appears when XLA's TPU rewriter splits a single
+    HLO into several sequential programs — cumsum's default lowering
+    (a triangular ``reduce_window``) becomes a 3-level sequential scan,
+    so each Python call records 3 module events.
+
+    Modules don't nest, so when ``len(events)`` divides evenly by
+    ``iters`` we group every ``len(events) // iters`` consecutive
+    events as one call and sum their ``duration_ns``. When the count
+    doesn't divide, the parse can't be trusted (truly variable
+    modules-per-call across iters, or a pathological xplane); in that
+    case return the raw per-event durations and flag ``mismatch=True``
+    so the caller can warn and downstream tooling can drop the run.
+    """
+    n = len(events)
+    if iters > 0 and n > 0 and n % iters == 0:
+        per_call = n // iters
+        durations = [
+            sum(events[i * per_call + j][2] for j in range(per_call)) * 1e-9 for i in range(iters)
+        ]
+        return durations, False
+    return [e[2] * 1e-9 for e in events], True
 
 
 def _find_xplane(profile_dir: str) -> str:
@@ -433,14 +474,17 @@ def _events_from_line(pd: Any, line_name: str) -> list[_EventTuple]:
 def _xla_module_events(pd: Any) -> list[_EventTuple]:
     """Per-program-execution events from the TPU plane's XLA Modules line.
 
-    Each event is one full program execution: ``start_ns`` is launch,
+    Each event is one full XLA program execution: ``start_ns`` is launch,
     ``end_ns`` is completion, ``duration_ns`` is the wall time of that
-    execution. There is exactly one module event per ``iters`` and the
-    line has no nesting, so per-iteration durations are read off directly
-    without clustering or summing. The XLA Ops line is sibling-and-children
-    HLO ops; reading durations from it double-counts when the program
-    contains an HLO ``while`` (e.g. ``lax.scan``), since the parent op's
-    duration covers its children's.
+    execution. The line has no nesting, but a single jit'd Python call
+    may dispatch more than one program — cumsum's triangular
+    ``reduce_window`` is rewritten on TPU into a 3-level sequential scan
+    that surfaces here as 3 events per call. ``_per_call_durations``
+    clusters consecutive events back into one duration per Python call.
+    The XLA Ops line is sibling-and-children HLO ops; reading durations
+    from it double-counts when the program contains an HLO ``while``
+    (e.g. ``lax.scan``), since the parent op's duration covers its
+    children's.
     """
     return _events_from_line(pd, "XLA Modules")
 
