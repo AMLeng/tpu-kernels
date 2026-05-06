@@ -98,16 +98,25 @@ def test_pallas_matches_naive_wide_k_bf16() -> None:
 def test_identity_left_returns_b() -> None:
     """``I @ b == b`` — pins basic semantics independently of the
     naive-vs-jnp.matmul check, which would also be wrong if the matmul
-    op were transposed (returning ``b.T @ a.T`` etc.)."""
-    b = jax.random.normal(jax.random.key(0), (32, 16), dtype=jnp.float32)
-    eye = jnp.eye(32, dtype=jnp.float32)
+    op were transposed (returning ``b.T @ a.T`` etc.).
+
+    bf16 inputs (not f32) are required: on TPU the MXU's default
+    precision is bf16-multiply / f32-accumulate regardless of input
+    dtype, so an f32-typed result still carries bf16 mantissa
+    precision. With f32 inputs every output element gets quantized to
+    the nearest bf16, which trips rtol=1e-5 against the unmolested
+    reference. With bf16 inputs the values are already bf16-exact and
+    the multiply by 1.0 is lossless, so equality holds."""
+    b = jax.random.normal(jax.random.key(0), (32, 16), dtype=jnp.bfloat16)
+    eye = jnp.eye(32, dtype=jnp.bfloat16)
     np.testing.assert_allclose(np.asarray(matmul_naive(eye, b)), np.asarray(b), rtol=1e-5)
 
 
 def test_identity_right_returns_a() -> None:
-    """``a @ I == a`` — symmetric pin to test_identity_left_returns_b."""
-    a = jax.random.normal(jax.random.key(0), (16, 32), dtype=jnp.float32)
-    eye = jnp.eye(32, dtype=jnp.float32)
+    """``a @ I == a`` — symmetric pin to test_identity_left_returns_b.
+    Same bf16 rationale: see that docstring."""
+    a = jax.random.normal(jax.random.key(0), (16, 32), dtype=jnp.bfloat16)
+    eye = jnp.eye(32, dtype=jnp.bfloat16)
     np.testing.assert_allclose(np.asarray(matmul_naive(a, eye)), np.asarray(a), rtol=1e-5)
 
 
