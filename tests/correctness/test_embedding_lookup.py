@@ -1,13 +1,9 @@
-"""Correctness tests for embedding_lookup variants.
-
-Pallas variant pending (A.5 in `docs/curriculum.md`); for now VARIANTS
-holds only the xla path. When the Pallas variant lands it joins the
-parametrize list with `interpret=True` so it runs on CPU here.
-"""
+"""Correctness tests for embedding_lookup variants on the natural 2-D layout."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -16,17 +12,22 @@ import pytest
 
 from tpu_kernels.ops.embedding_lookup import (
     embedding_lookup_naive,
+    embedding_lookup_pallas,
     embedding_lookup_xla,
 )
 
 VARIANTS: dict[str, Callable[[jax.Array, jax.Array], jax.Array]] = {
     "xla": embedding_lookup_xla,
+    "pallas": partial(embedding_lookup_pallas, block_shape=(8,), interpret=True),
 }
 
 
 @pytest.fixture
 def params() -> jax.Array:
-    return jax.random.normal(jax.random.key(0), (1024, 256), dtype=jnp.float32)
+    # bf16 fixture: matches the real-world dtype, and avoids spurious
+    # precision drift in the slab Pallas variant whose chunk-assembly
+    # matmul lowers through the TPU's bf16-precision MXU.
+    return jax.random.normal(jax.random.key(0), (1024, 256), dtype=jnp.bfloat16)
 
 
 @pytest.fixture

@@ -1,9 +1,11 @@
 """XLA embedding lookup: jit-wrapped naive.
 
-For an op this simple there's no JAX-level tuning to do — XLA already
-emits a single gather. Importing the naive body keeps the relationship
-explicit and prevents the two from drifting apart. Kept here as the
-placeholder slot so every op has the same three-variant shape.
+For ``params[ids]`` on the natural 2-D layout there is no JAX-level
+tuning that beats what XLA already emits — the lowered HLO contains a
+single ``gather_custom_fusion`` (kind=kCustom), an XLA-internal C++
+fusion that lands at ~32% HBM BW. JAX has no surface to express
+anything closer to the speed-of-light here. Importing the naive body
+keeps the relationship explicit and prevents drift.
 """
 
 from __future__ import annotations
