@@ -146,9 +146,47 @@ carry across tiles, plus the segment-boundary reset that distinguishes
 segmented scan from plain cumsum. The carry-across-tiles mechanic is
 what scan-heavy kernels reuse, and segment-aware offsets are the
 prerequisite for every ragged kernel in Stage D — knowing where each
-segment starts in a packed buffer is exactly this primitive. As with
-matmul and embedding lookup, XLA's `lax.associative_scan` is
-competitive on bandwidth; Pallas earns its place on the technique.
+segment starts in a packed buffer is exactly this primitive.
+
+A side experiment in [`ops/cumsum/`](../src/tpu_kernels/ops/cumsum/PERF.md)
+measures the no-segment-reset baseline. The pure-JAX paths each cap
+out roughly an order of magnitude below the HBM ceiling on v5e at
+M=2^28, and they fail in different ways:
+
+- `jnp.cumsum` / `jax.lax.cumsum` / triangular `lax.reduce_window` —
+  same primitive: XLA's TPU rewriter turns the triangular
+  `reduce_window` into a 3-level lane-vectorized scan. Compiles
+  fine, runs at ~2.3% HBM BW because each level is a separate
+  kernel forced through HBM, so total traffic is ~5× the minimum.
+  Right tool when N is small enough that those extra round-trips
+  don't dominate (e.g. cumsum over a small head dim with a larger
+  batched outer dim that amortizes launch overhead).
+- chunked `lax.scan` (cumsum within a fixed-size tile in VMEM,
+  scalar carry across tiles) — the closest pure-JAX gets: at the
+  optimal K (~2^17 for the bf16 shape regime) it lands at ~2.8% BW
+  on M=2^24, modestly beating `jnp.cumsum` because the carry gives
+  it only 2× HBM round-trips vs `jnp.cumsum`'s ~5×. Per-K behavior
+  is a U-curve: small K is dispatch-overhead-bound, large K pays
+  the multi-level cumsum cost on each tile. Doesn't reach
+  HBM-bound because `lax.scan` doesn't pipeline async DMAs across
+  iterations — every tile is "wait for read DMA → compute → wait
+  for write DMA", with HBM I/O on the critical path.
+- `lax.associative_scan` — would run fast (parallel-prefix tree),
+  but it's a Python-side recursive expansion that emits O(N log N)
+  HLO; compile time grows superlinearly (16 s at M=2^20, projected
+  ~25 min at M=2^24). Right tool when N is small enough that the
+  unrolled HLO stays manageable, especially for non-trivial
+  combiners where no rewriter exists.
+
+Chunked `lax.scan` is the bar A.6's planned Pallas variant has to
+clear, and the gap is specifically about async DMA overlap. `lax.scan`
+issues each iteration's read DMA serially with the body's compute,
+which keeps HBM I/O on the critical path; Pallas exposes async DMA
+primitives, so the hypothesis A.6 is set up to test is whether
+double-buffering — issuing the next tile's read DMA in parallel with
+the current tile's compute — closes that gap. The carry-across-tiles
+mechanic itself is the same either way. The segment-reset will add
+within-tile boundary detection on top.
 
 ## Stage B — Collectives (single-host v5e-N over ICI)
 
