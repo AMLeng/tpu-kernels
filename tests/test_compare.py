@@ -543,6 +543,79 @@ def test_compare_kwargs_param_is_keyword_only() -> None:
         compare(workload, {"v": f}, {"some": "dict"})  # type: ignore[misc]
 
 
+def test_compare_passes_per_variant_subdir_to_bench_under_profile_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``profile_dir`` must be sharded per variant before reaching ``bench``.
+
+    Regression: ``compare()`` forwarded the same ``profile_dir`` to every
+    ``bench()`` call. With two variants, both wrapped their timed loop in
+    ``jax.profiler.trace(profile_dir)`` against the same path — the second
+    trace clobbered the first's xplane.pb, and on TPU the active-trace
+    overhead made both variants' wallclock converge to the same number.
+    Each variant must get its own subdir so traces don't collide and the
+    per-variant artifact is recoverable from xprof.
+    """
+    captured: list[str | None] = []
+
+    def fake_bench(*, profile_dir: str | None = None, **_kw: Any) -> BenchResult:
+        captured.append(profile_dir)
+        return BenchResult(name="x", times_s=[1e-3], warmup_iters=1, timed_iters=1)
+
+    monkeypatch.setattr("benchmarks.compare.bench", fake_bench)
+
+    @jax.jit
+    def f(x: jax.Array) -> jax.Array:
+        return x
+
+    compare(
+        Workload(op="op", flops=1, nbytes=1, args=(jnp.zeros(1),)),
+        variants={"xla": f, "pallas": f},
+        profile_dir=str(tmp_path),
+        write_history=False,
+    )
+
+    # Each variant gets its own profile dir; no two variants share a path.
+    assert len(captured) == 2
+    assert all(p is not None for p in captured)
+    assert len(set(captured)) == 2
+    # Each subdir lives under the user-supplied profile_dir.
+    for p in captured:
+        assert p is not None
+        assert Path(p).parent == tmp_path
+    # Subdir names match the variant names so the user can find traces.
+    assert {Path(p).name for p in captured if p is not None} == {"xla", "pallas"}
+
+
+def test_compare_passes_none_profile_dir_to_bench_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``profile_dir=None`` (default) must pass through unchanged.
+
+    No subdir synthesis when the user didn't ask for a trace — the
+    profiler-active dispatch overhead would otherwise leak into every
+    benched run.
+    """
+    captured: list[str | None] = []
+
+    def fake_bench(*, profile_dir: str | None = None, **_kw: Any) -> BenchResult:
+        captured.append(profile_dir)
+        return BenchResult(name="x", times_s=[1e-3], warmup_iters=1, timed_iters=1)
+
+    monkeypatch.setattr("benchmarks.compare.bench", fake_bench)
+
+    @jax.jit
+    def f(x: jax.Array) -> jax.Array:
+        return x
+
+    compare(
+        Workload(op="op", flops=1, nbytes=1, args=(jnp.zeros(1),)),
+        variants={"v": f},
+        write_history=False,
+    )
+    assert captured == [None]
+
+
 def test_compare_can_bench_multiple_pallas_variants(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -21,6 +21,7 @@ bench_history/<op>/. With `dump_hlo=True`, prints the lowered HLO per variant.
 from __future__ import annotations
 
 import json
+import os
 import warnings
 from collections.abc import Callable
 from dataclasses import asdict
@@ -133,6 +134,13 @@ def compare(
     results: dict[str, Roofline] = {}
     bench_results: list[BenchRow] = []
     for name, jitted in jitted_variants.items():
+        # Shard ``profile_dir`` per variant so each variant's xprof artifact
+        # lands at a distinct path. Forwarding the same dir to every bench()
+        # would have the second variant's xplane.pb clobber the first's, and
+        # in device-timing mode the parser would read the wrong variant's
+        # events. Subdir name = variant name so ``xprof <profile_dir>/<name>``
+        # is the obvious follow-up command.
+        variant_profile_dir = os.path.join(profile_dir, name) if profile_dir is not None else None
         br = bench(
             name=f"{op}::{name}",
             fn=jitted,
@@ -140,7 +148,7 @@ def compare(
             kwargs=kwargs,
             warmup=warmup,
             iters=iters,
-            profile_dir=profile_dir,
+            profile_dir=variant_profile_dir,
             timing=timing,
         )
         roof = analyze(

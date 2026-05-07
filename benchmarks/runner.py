@@ -429,13 +429,24 @@ def _per_call_durations(
 
 
 def _find_xplane(profile_dir: str) -> str:
-    """Recursive scan for *.xplane.pb. jax.profiler.trace writes under
-    plugins/profile/<run>/<host>.xplane.pb; we don't depend on the layout."""
+    """Recursive scan for *.xplane.pb; on multiple matches, return the newest.
+
+    ``jax.profiler.trace`` writes under ``plugins/profile/<run>/<host>.xplane.pb``
+    so we walk rather than hardcode the layout. When ``profile_dir`` is a
+    re-used path that accumulates xplanes across bench runs, returning
+    whatever ``os.walk`` surfaces first means a stale xplane can shadow
+    the one this bench just wrote (filesystem order, not write-time order).
+    Picking by mtime pins the parse to the freshest trace, which is what
+    every caller actually wants.
+    """
+    candidates: list[str] = []
     for root, _dirs, files in os.walk(profile_dir):
         for f in files:
             if f.endswith(".xplane.pb"):
-                return os.path.join(root, f)
-    raise FileNotFoundError(f"no *.xplane.pb under {profile_dir}")
+                candidates.append(os.path.join(root, f))
+    if not candidates:
+        raise FileNotFoundError(f"no *.xplane.pb under {profile_dir}")
+    return max(candidates, key=os.path.getmtime)
 
 
 def _events_from_line(pd: Any, line_name: str) -> list[_EventTuple]:

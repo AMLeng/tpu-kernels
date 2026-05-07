@@ -311,6 +311,36 @@ def test_find_xplane_raises_when_missing(tmp_path) -> None:
         _find_xplane(str(tmp_path))
 
 
+def test_find_xplane_returns_most_recent_when_multiple_present(tmp_path) -> None:
+    """When ``profile_dir`` accumulates xplanes across runs, return the newest.
+
+    Regression for the cumsum/--profile-dir bug: a re-used ``--profile-dir``
+    leaves xplane.pb files from prior bench runs in place. ``_find_xplane``
+    used to return whatever ``os.walk`` surfaced first — which on Linux is
+    filesystem (insertion / inode) order, not write-time order, so a stale
+    xplane could shadow the just-written one. With ``compare`` now sharding
+    profile_dir per variant, this matters most on a *re-run* against the
+    same dir; without this rule the second run reads numbers from the first.
+    Picking by mtime makes the parser pin to the trace this bench just took.
+    """
+    older = tmp_path / "plugins" / "profile" / "RUN_OLD"
+    newer = tmp_path / "plugins" / "profile" / "RUN_NEW"
+    older.mkdir(parents=True)
+    newer.mkdir(parents=True)
+    older_pb = older / "host.xplane.pb"
+    newer_pb = newer / "host.xplane.pb"
+    older_pb.write_bytes(b"old")
+    newer_pb.write_bytes(b"new")
+    # Force the mtime ordering rather than depending on write order resolution.
+    import os as _os
+
+    _os.utime(older_pb, (1_000_000_000, 1_000_000_000))
+    _os.utime(newer_pb, (2_000_000_000, 2_000_000_000))
+
+    found = _find_xplane(str(tmp_path))
+    assert found == str(newer_pb)
+
+
 # ---- _xla_module_events: per-program-execution durations -----------------
 
 
