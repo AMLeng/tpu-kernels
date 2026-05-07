@@ -5,11 +5,13 @@ bf16) — speed-of-light is HBM bandwidth. No-segment-reset
 stepping-stone for ``segment_cumsum`` (A.6 in `docs/curriculum.md`):
 running this side-by-side with ``segment_cumsum_xla`` on the same
 shape regime attributes any delta to the segment-reset path rather
-than to the scan itself. Off the curriculum on purpose; no Pallas
-variant.
+than to the scan itself. Off the curriculum on purpose; the Pallas
+variant exists to make the carry-across-tiles pattern concrete before
+the segmented version inherits it.
 """
 
 from tpu_kernels.ops.cumsum.naive import cumsum as cumsum_naive
+from tpu_kernels.ops.cumsum.pallas import cumsum as cumsum_pallas
 from tpu_kernels.ops.cumsum.xla import cumsum as cumsum_xla
 
-__all__ = ["cumsum_naive", "cumsum_xla"]
+__all__ = ["cumsum_naive", "cumsum_pallas", "cumsum_xla"]

@@ -4,16 +4,26 @@ Pin contract between the suite's CLI defaults and the kernel they
 drive. CLAUDE.md treats the suite as part of the harness — silent
 drift between defaults and the bench's reported numbers is exactly
 what the harness exists to prevent.
-
-No `--block` / `--sweep-block` checks here — there is no Pallas
-variant for ``cumsum`` (off-curriculum stepping-stone for A.6); those
-flags aren't wired into this suite.
 """
 
 from __future__ import annotations
 
+import pytest
 from benchmarks.roofline import V5E_VMEM_CAPACITY
+from benchmarks.suites._common import validate_block_shapes
 from benchmarks.suites.cumsum import _make_parser
+
+from tpu_kernels.ops.cumsum.pallas import DEFAULT_BLOCK
+
+
+def test_block_default_matches_kernel_default_block() -> None:
+    """No-flag bench must use the kernel's ``DEFAULT_BLOCK``. Drift means
+    the suite's PERF.md ``Current`` would be measured at a different bm
+    than the bench actually picks at no-flag."""
+    args = _make_parser().parse_args([])
+    assert tuple(args.block) == DEFAULT_BLOCK, (
+        f"suite --block default {tuple(args.block)} != kernel DEFAULT_BLOCK {DEFAULT_BLOCK}"
+    )
 
 
 def test_timing_default_matches_perf_md_mode() -> None:
@@ -27,6 +37,24 @@ def test_timing_default_matches_perf_md_mode() -> None:
 def test_timing_flag_accepts_device() -> None:
     args = _make_parser().parse_args(["--timing", "device"])
     assert args.timing == "device"
+
+
+def test_block_rejects_wrong_axis_count() -> None:
+    """cumsum tiles a 1-D buffer; a 2-axis ``--block`` is a typo against
+    a 2-D op's flag pattern. Catch it before it reaches the kernel."""
+    parser = _make_parser()
+    args = parser.parse_args(["--block", "128", "256"])
+    with pytest.raises(SystemExit):
+        validate_block_shapes(args, expected_axes=1, parser=parser)
+
+
+def test_sweep_block_rejects_wrong_axis_count() -> None:
+    """A 2-axis sweep would otherwise blow up the cartesian product and
+    crash deep inside ``cumsum_pallas``."""
+    parser = _make_parser()
+    args = parser.parse_args(["--sweep-block", "128,256", "512,1024"])
+    with pytest.raises(SystemExit):
+        validate_block_shapes(args, expected_axes=1, parser=parser)
 
 
 def test_default_x_size_clears_vmem_floor() -> None:
