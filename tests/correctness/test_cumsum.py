@@ -20,19 +20,31 @@ VARIANTS: dict[str, Callable[[jax.Array], jax.Array]] = {
 }
 
 
-@pytest.fixture
-def x() -> jax.Array:
-    return jax.random.normal(jax.random.key(0), (256,), dtype=jnp.float32)
-
-
 @pytest.mark.parametrize("variant", VARIANTS.values(), ids=list(VARIANTS.keys()))
+@pytest.mark.parametrize(
+    "n",
+    [
+        # < xla's INNER=4096: hits the single-call `lax.cumsum` fallback.
+        256,
+        # 2x INNER + an unaligned remainder: exercises the (T, INNER)
+        # reshape, the L2 cumsum-of-totals path, and the zero-pad-and-crop.
+        8192 + 17,
+    ],
+    ids=lambda n: f"n={n}",
+)
 def test_matches_naive(
-    x: jax.Array,
+    n: int,
     variant: Callable[[jax.Array], jax.Array],
 ) -> None:
+    x = jax.random.normal(jax.random.key(0), (n,), dtype=jnp.float32)
+    # The hierarchy accumulates in a different order than naive's linear
+    # scan, so f32 sums diverge at noise level (~sqrt(N) ulp). atol absorbs
+    # near-zero crossings where rtol blows up.
     np.testing.assert_allclose(
         np.asarray(variant(x)),
         np.asarray(cumsum_naive(x)),
+        atol=1e-4,
+        rtol=1e-4,
     )
 
 
