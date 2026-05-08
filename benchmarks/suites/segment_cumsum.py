@@ -29,19 +29,28 @@ from tpu_kernels.ops.segment_cumsum import segment_cumsum_xla
 
 def _make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(parents=[base_parser()])
-    # Default M chosen to clear the 4x v5e VMEM floor (CLAUDE.md / Bench inputs):
-    # 2^28 bf16 elements = 512 MiB, matching scale's (16384, 16384). The shape
-    # is far above realistic per-call decode batches but is what the harness
-    # needs to produce a meaningful BW%. num_segments=1024 keeps each segment
-    # ~262K elements wide — enough boundaries that the segment-reset path runs
-    # many times per call but small enough that within-segment scan dominates
-    # the work.
+    # M default clears the 4x v5e VMEM floor (CLAUDE.md / Bench inputs):
+    # 2^28 bf16 elements = 512 MiB, matching scale's (16384, 16384).
+    #
+    # mean_length parametrizes the workload regime. Boundary-row density
+    # is ~128/mean_length, so mean_length determines whether the kernel
+    # exercises the within-row segment-reset path (the part that
+    # distinguishes segment_cumsum from plain cumsum) or stays on the
+    # plain-cumsum fast path. num_segments would also encode this but
+    # only conditional on M, so two runs at the same num_segments and
+    # different M sit in different regimes; mean_length is M-invariant.
+    #
+    # Default mean_length=1024 mirrors realistic packed-attention training
+    # densities (typical packed seq lens 512-2048). ~12.5% of 128-lane
+    # rows have a within-row boundary at this density — enough to make
+    # the boundary-row path matter without dominating, which is the
+    # regime the kernel needs to be good at.
     parser.add_argument("--m", type=int, default=2**28, help="number of elements")
     parser.add_argument(
-        "--num-segments",
+        "--mean-length",
         type=int,
         default=1024,
-        help="number of equal-width segments",
+        help="mean segment length (sets num_segments = m // mean_length)",
     )
     return parser
 
@@ -50,9 +59,9 @@ def main() -> None:
     parser = _make_parser()
     args = parser.parse_args()
 
-    if args.m % args.num_segments:
+    if args.m % args.mean_length:
         parser.error(
-            f"--m ({args.m}) must be divisible by --num-segments ({args.num_segments}) "
+            f"--m ({args.m}) must be divisible by --mean-length ({args.mean_length}) "
             f"for equal-width segments."
         )
 
@@ -60,10 +69,10 @@ def main() -> None:
     bytes_per_elem = jnp.dtype(dtype).itemsize
 
     x = jax.random.normal(jax.random.key(0), (args.m,), dtype=dtype)
-    seg_size = args.m // args.num_segments
+    num_segments = args.m // args.mean_length
     segment_ids = jnp.repeat(
-        jnp.arange(args.num_segments, dtype=jnp.int32),
-        seg_size,
+        jnp.arange(num_segments, dtype=jnp.int32),
+        args.mean_length,
     )
 
     flops = args.m  # one add per element
@@ -86,7 +95,12 @@ def main() -> None:
         dump_hlo=args.dump_hlo,
         profile_dir=args.profile_dir,
         timing=args.timing,
-        config={"m": args.m, "num_segments": args.num_segments, "dtype": args.dtype},
+        config={
+            "m": args.m,
+            "mean_length": args.mean_length,
+            "num_segments": num_segments,
+            "dtype": args.dtype,
+        },
     )
 
 
