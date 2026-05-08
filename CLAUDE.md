@@ -213,9 +213,14 @@ in the diff. Use bullets rather than inline parens for any list of
 facts.
 
 Co-author trailer (when applicable): use the bare RFC form
-`Co-Authored-By: <Name> <email>`. **No parentheticals or annotations
-inside the trailer** (e.g. `Claude (1M context)` is wrong; some downstream
-parsers reject anything that isn't `Name <email>`).
+`Co-Authored-By: <Name> <email>`, and put the specific model version
+in the Name slot — e.g. `Co-Authored-By: Claude Opus 4.7
+<noreply@anthropic.com>`. The model version belongs in the trailer
+(rather than only the commit body or PR description) so `git log`
+preserves which model wrote which change without further lookup.
+**No parentheticals or annotations inside the trailer** (e.g.
+`Claude Opus 4.7 (1M context)` is wrong; some downstream parsers
+reject anything that isn't `Name <email>`).
 
 ## Things to avoid
 
