@@ -40,6 +40,10 @@ DEFAULT_BLOCK = (524288,)
 
 def _hs_exclusive_prefix(totals: jax.Array) -> jax.Array:
     """Hillis-Steele exclusive prefix on (N, 128) lane-broadcast totals."""
+    # N=1 is a real path (bm=16384 → b=1). The final concat below would
+    # otherwise produce a 0-sized vector that the TPU lowering rejects.
+    if totals.shape[0] == 1:
+        return jnp.zeros_like(totals)
     running = totals
     offset = 1
     while offset < totals.shape[0]:

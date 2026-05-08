@@ -24,10 +24,27 @@ from tpu_kernels.ops.cumsum import cumsum_naive, cumsum_pallas, cumsum_xla
 # Hillis-Steele, only cross-tile carry); bm=512 → T=4 per tile
 # (log2(4)=2 Hillis-Steele iterations on the row totals before the
 # cross-tile carry).
+#
+# `interpret=True` evaluates the kernel via standard `jnp.*` ops, but
+# those still dispatch to whatever the default device is. On a TPU box
+# the matmul then takes the MXU's bf16-input default and drifts beyond
+# this test's f32 tolerance, so we pin to CPU explicitly. CPU-only CI
+# already lands here naturally.
+_CPU_DEVICE = jax.devices("cpu")[0]
+
+
+def _on_cpu(fn: Callable[..., jax.Array]) -> Callable[..., jax.Array]:
+    def wrapper(*args, **kwargs):
+        with jax.default_device(_CPU_DEVICE):
+            return fn(*args, **kwargs)
+
+    return wrapper
+
+
 VARIANTS: dict[str, Callable[[jax.Array], jax.Array]] = {
     "xla": cumsum_xla,
-    "pallas_b128": partial(cumsum_pallas, block_shape=(128,), interpret=True),
-    "pallas_b512": partial(cumsum_pallas, block_shape=(512,), interpret=True),
+    "pallas_b128": _on_cpu(partial(cumsum_pallas, block_shape=(128,), interpret=True)),
+    "pallas_b512": _on_cpu(partial(cumsum_pallas, block_shape=(512,), interpret=True)),
 }
 
 
@@ -73,18 +90,23 @@ def test_xla_handles_unaligned_remainder() -> None:
     )
 
 
+@pytest.mark.tpu
 def test_pallas_recursive_mxu_path() -> None:
     """bm=16384 → T=128, B=1: exercises the within-block recursive-MXU
-    path (the T>=128 branch). The shared parametrization above uses
-    bm in {128, 512} (T<128) so this branch is otherwise unexercised
-    on CPU."""
+    path (the T>=128 branch). TPU-only: the b=1 path goes through
+    `_hs_exclusive_prefix`'s shape[0]==1 early-return, a real lowering
+    concern (a 0-sized concat would otherwise reject). bf16 inputs and
+    a loose tol because the MXU runs at bf16-input precision regardless
+    of input dtype — feeding f32 would misrepresent what's actually
+    being computed. The shared parametrization above uses bm in
+    {128, 512} (T<128) so this branch is otherwise unexercised."""
     n = 2 * 16384
-    x = jax.random.normal(jax.random.key(0), (n,), dtype=jnp.float32)
+    x = jax.random.normal(jax.random.key(0), (n,), dtype=jnp.bfloat16)
     np.testing.assert_allclose(
-        np.asarray(cumsum_pallas(x, block_shape=(16384,), interpret=True)),
-        np.asarray(cumsum_naive(x)),
-        atol=1e-3,
-        rtol=1e-3,
+        np.asarray(cumsum_pallas(x, block_shape=(16384,))).astype(np.float32),
+        np.asarray(cumsum_naive(x)).astype(np.float32),
+        atol=2e-1,
+        rtol=2e-2,
     )
 
 
