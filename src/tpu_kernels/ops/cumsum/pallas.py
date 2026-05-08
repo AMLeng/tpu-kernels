@@ -61,13 +61,19 @@ def _cumsum_kernel(x_ref, u_ref, v_ref, o_ref, scratch_ref):
         scratch_ref[...] = jnp.zeros_like(scratch_ref)
 
     t = x_ref.shape[0]  # bm / 128
+    x = x_ref[...]
 
-    summed_rows = jnp.dot(x_ref[...], u_ref[...], preferred_element_type=jnp.float32).astype(
-        x_ref.dtype
-    )
+    summed_rows = jnp.dot(x, u_ref[...], preferred_element_type=jnp.float32).astype(x_ref.dtype)
+    # Row totals come from a fresh lane-axis reduction over ``x``, not
+    # from slicing ``summed_rows[:, -1:]``. The slice would create a
+    # serial dep on the matmul output (the broadcast can't start until
+    # the MXU retires that lane); the VPU sum runs concurrently with
+    # the MXU on the same VMEM-resident input. Worth ~7 BW pp at the
+    # canonical (M=2^28, bm=524288) shape.
+    row_total_col = jnp.sum(x, axis=1, keepdims=True)
 
     if t < 128:
-        row_totals = jnp.broadcast_to(summed_rows[:, -1:], summed_rows.shape)
+        row_totals = jnp.broadcast_to(row_total_col, summed_rows.shape)
         tile_cumsum = summed_rows + _hs_exclusive_prefix(row_totals)
     else:
         b = t // 128
@@ -75,7 +81,7 @@ def _cumsum_kernel(x_ref, u_ref, v_ref, o_ref, scratch_ref):
         # Lane-broadcast row totals so the (B, 128, 128) tensor has
         # row_total[b*128+j] at every lane l — the dot below contracts
         # on the within-block-row axis assuming this invariant.
-        row_totals_full = jnp.broadcast_to(summed_rows[:, -1:], summed_rows.shape)
+        row_totals_full = jnp.broadcast_to(row_total_col, summed_rows.shape)
         row_totals_3d = row_totals_full.reshape(b, 128, 128)
 
         # ``v[k, j] = 1 iff j < k`` (lower-triangular) on LHS, broadcast
