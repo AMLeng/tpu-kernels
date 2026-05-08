@@ -72,9 +72,18 @@ def _cumsum_kernel(x_ref, u_ref, v_ref, o_ref, scratch_ref):
     # (M=2^28, bm=524288).
     row_total_col = jnp.sum(x, axis=1, keepdims=True)
 
+    # Fold the cross-tile carry into the (B, 128) block_exclusive — or
+    # into the small-T 3-way add — so it joins the existing fused
+    # broadcast-add into ``output_3d`` rather than landing as a
+    # separate ``o_ref = scratch + tile_cumsum`` pass over (T, 128).
+    # Mosaic already fuses most of that pass anyway (per-tile saving
+    # is ~3.5 ns, ~0.04 BW pp), so this is mainly principled cleanup
+    # that keeps the per-tile add count visible in the source.
+    scratch_value = scratch_ref[...]  # (1,)
+
     if t < 128:
         row_totals = jnp.broadcast_to(row_total_col, summed_rows.shape)
-        tile_cumsum = summed_rows + _hs_exclusive_prefix(row_totals)
+        tile_cumsum = summed_rows + _hs_exclusive_prefix(row_totals) + scratch_value
     else:
         b = t // 128
 
@@ -104,7 +113,7 @@ def _cumsum_kernel(x_ref, u_ref, v_ref, o_ref, scratch_ref):
         # exclusive prefixes + recompute than to compute the inclusive prefixes
         # and then index/concat to get the exclusive ones.
         block_totals = jnp.sum(row_totals_3d, axis=1)
-        block_exclusive = _hs_exclusive_prefix(block_totals)
+        block_exclusive = _hs_exclusive_prefix(block_totals) + scratch_value
 
         # broadcast_in_dim mapping (0, 1) -> (0, 2) inserts the size-128
         # broadcast at sublane position; lane stays trailing — avoids
@@ -116,8 +125,10 @@ def _cumsum_kernel(x_ref, u_ref, v_ref, o_ref, scratch_ref):
         output_3d = summed_rows_3d + inner_exclusive_3d + block_exclusive_3d
         tile_cumsum = output_3d.reshape(t, 128)
 
-    o_ref[...] = scratch_ref[...] + tile_cumsum
-    scratch_ref[...] = scratch_ref[...] + tile_cumsum[-1:, -1]
+    o_ref[...] = tile_cumsum
+    # tile_cumsum already includes the carry, so its last element is
+    # the new running total — no extra scalar add needed.
+    scratch_ref[...] = tile_cumsum[-1:, -1]
 
 
 def cumsum(
