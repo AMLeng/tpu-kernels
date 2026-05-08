@@ -15,8 +15,8 @@ the level 2 row-total prefixes in ``(B, k_sublane, l_lane)`` layout, aligning
 with the (B, j_sublane, l_lane) layout of the per-row prefixes with no
 post-MXU sublane↔lane transpose. The MXU folds ``log2(128) = 7`` HS
 levels into hardware that runs in parallel with the VPU. A small HS
-scan across the ``B`` block-totals (32 elements at the canonical
-``bm=524288``, so 5 trivial levels) finishes the cross-block prefix.
+scan across the ``B`` block-totals (64 elements at the canonical
+``bm=1048576``, so 6 trivial levels) finishes the cross-block prefix.
 
 For ``T < 128`` (small ``bm``) the recursion has no purchase and a
 single (T, 128)-broadcast HS handles the row-totals.
@@ -35,7 +35,7 @@ import jax.numpy as jnp
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 
-DEFAULT_BLOCK = (524288,)
+DEFAULT_BLOCK = (1048576,)
 
 
 def _hs_exclusive_prefix(totals: jax.Array) -> jax.Array:
@@ -68,8 +68,8 @@ def _cumsum_kernel(x_ref, u_ref, v_ref, o_ref, scratch_ref):
     # from slicing ``summed_rows[:, -1:]``. The slice would create a
     # serial dep on the matmul output (the broadcast can't start until
     # the MXU retires that lane); the VPU sum runs concurrently with
-    # the MXU on the same VMEM-resident input. Worth ~7 BW pp at the
-    # canonical (M=2^28, bm=524288) shape.
+    # the MXU on the same VMEM-resident input. Worth ~7 BW pp at
+    # (M=2^28, bm=524288).
     row_total_col = jnp.sum(x, axis=1, keepdims=True)
 
     if t < 128:

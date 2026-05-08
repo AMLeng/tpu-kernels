@@ -1,0 +1,90 @@
+{
+  "op": "cumsum",
+  "kind": "sweep",
+  "timestamp": "20260508T183514_476656Z",
+  "git_sha": "cac83c9e2e9fa762b6c8816e750095a6410651a7",
+  "hw": {
+    "kind": "v5e",
+    "bf16_flops": 197000000000000.0,
+    "f32_flops": 98000000000000.0,
+    "int8_ops": 393000000000000.0,
+    "hbm_bw": 819000000000.0,
+    "ici_bw_per_link": 200000000000.0,
+    "ici_links_per_chip": 4,
+    "num_chips": 1
+  },
+  "flops": 268435456,
+  "bytes": 1073741824,
+  "flop_dtype": "bf16",
+  "config": {},
+  "sweep_axes": {
+    "bm": [
+      262144,
+      524288,
+      1048576,
+      2097152
+    ]
+  },
+  "skipped": [],
+  "errored": [
+    {
+      "config": {
+        "bm": 2097152
+      },
+      "error": "JaxRuntimeError('RESOURCE_EXHAUSTED: E1001: CompileTimeScopedVmemOom:\\nRan out of memory in memory space vmem while allocating on stack for %cumsum.1 = bf16[2097152,128]{1,0:T(8,128)(2,1)} custom-call(%bitcast, %get-tuple-element.1, %get-tuple-element), custom_call_target=\"tpu_custom_call\", operand_layout_constraints={bf16[2097152,128]{1,0}, bf16[128,128]{1,0}, bf16[128,128]{1,0}}, frontend_attributes={kernel_metadata={}}, metadata={op_name=\"jit(cumsum)/pallas_call\" stack_frame_id=11}. Scoped allocation with size 16.00M and limit 16.00M exceeded scoped vmem limit by 512B. It should not be possible to run out of scoped vmem - \\nSee https://openxla.org/xla/errors/error_1001 for more details.')"
+    }
+  ],
+  "variants": {
+    "bm=1048576": {
+      "config": {
+        "bm": 1048576
+      },
+      "median_s": 0.0016390285,
+      "p99_s": 0.0016398585700000002,
+      "min_s": 0.001637556,
+      "stdev_s": 6.003153096936878e-07,
+      "timing": "device",
+      "unroll": 1,
+      "cluster_mismatch": false,
+      "mfu": 0.0008313562137075601,
+      "bw_util": 0.7998885181948198,
+      "ici_util": 0.0,
+      "sol_pct": 0.7998885181948198,
+      "binds": "memory"
+    },
+    "bm=524288": {
+      "config": {
+        "bm": 524288
+      },
+      "median_s": 0.0016431875000000001,
+      "p99_s": 0.0016443112000000001,
+      "min_s": 0.001641756,
+      "stdev_s": 6.386482929635513e-07,
+      "timing": "device",
+      "unroll": 1,
+      "cluster_mismatch": false,
+      "mfu": 0.000829252004362729,
+      "bw_util": 0.7978639553575463,
+      "ici_util": 0.0,
+      "sol_pct": 0.7978639553575463,
+      "binds": "memory"
+    },
+    "bm=262144": {
+      "config": {
+        "bm": 262144
+      },
+      "median_s": 0.0018368835000000003,
+      "p99_s": 0.0018425781800000002,
+      "min_s": 0.001832035,
+      "stdev_s": 2.2922206309717614e-06,
+      "timing": "device",
+      "unroll": 1,
+      "cluster_mismatch": false,
+      "mfu": 0.0007418088996492056,
+      "bw_util": 0.7137306629103467,
+      "ici_util": 0.0,
+      "sol_pct": 0.7137306629103467,
+      "binds": "memory"
+    }
+  }
+}
