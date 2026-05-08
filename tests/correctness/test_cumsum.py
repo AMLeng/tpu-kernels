@@ -73,6 +73,21 @@ def test_xla_handles_unaligned_remainder() -> None:
     )
 
 
+def test_pallas_recursive_mxu_path() -> None:
+    """bm=16384 → T=128, B=1: exercises the within-block recursive-MXU
+    path (the T>=128 branch). The shared parametrization above uses
+    bm in {128, 512} (T<128) so this branch is otherwise unexercised
+    on CPU."""
+    n = 2 * 16384
+    x = jax.random.normal(jax.random.key(0), (n,), dtype=jnp.float32)
+    np.testing.assert_allclose(
+        np.asarray(cumsum_pallas(x, block_shape=(16384,), interpret=True)),
+        np.asarray(cumsum_naive(x)),
+        atol=1e-3,
+        rtol=1e-3,
+    )
+
+
 def test_naive_returns_prefix_sum() -> None:
     """Pin the oracle independently of any variant. If naive itself
     drifted, every variant test would still pass against the wrong reference."""
