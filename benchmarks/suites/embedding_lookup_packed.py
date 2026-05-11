@@ -2,6 +2,7 @@
 
 Run: `uv run python -m benchmarks.suites.embedding_lookup_packed`
 With HLO dump: `... --dump-hlo`
+With Mosaic dump (Pallas-side equivalent): `... --dump-mosaic`
 With xprof trace: `... --profile-dir /tmp/embedding_lookup_packed_trace`
 
 Same workload as ``embedding_lookup`` (memory-bound row gather; nbytes
@@ -110,6 +111,7 @@ def main() -> None:
             "pallas": pallas_variant(embedding_lookup_packed_pallas, block_shape=block_shape),
         },
         dump_hlo=args.dump_hlo,
+        dump_mosaic=args.dump_mosaic,
         profile_dir=args.profile_dir,
         timing=args.timing,
         config=config,

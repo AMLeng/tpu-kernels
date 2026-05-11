@@ -20,6 +20,7 @@ uv run python -m benchmarks.suites.scale --m 16384 --n 16384
 uv run python -m benchmarks.suites.scale --dtype bf16
 uv run python -m benchmarks.suites.scale --block 512 512
 uv run python -m benchmarks.suites.scale --dump-hlo
+uv run python -m benchmarks.suites.scale --dump-mosaic     # Pallas-side equivalent of --dump-hlo
 uv run python -m benchmarks.suites.scale --profile-dir /tmp/trace
 uv run xprof /tmp/trace                          # open the trace at :8791
 

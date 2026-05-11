@@ -8,6 +8,7 @@ Cartesian block sweep (Pallas tuning):
     `... --sweep-block 1024,2048,4096,8192,16384`
 
 With HLO dump: `... --dump-hlo`
+With Mosaic dump (Pallas-side equivalent): `... --dump-mosaic`
 With xprof trace: `... --profile-dir /tmp/segment_cumsum_trace`
 
 Memory-bound scan (1 add per element); speed-of-light is HBM bandwidth.
@@ -122,6 +123,7 @@ def main() -> None:
             "pallas": pallas_variant(segment_cumsum_pallas, block_shape=block_shape),
         },
         dump_hlo=args.dump_hlo,
+        dump_mosaic=args.dump_mosaic,
         profile_dir=args.profile_dir,
         timing=args.timing,
         config={

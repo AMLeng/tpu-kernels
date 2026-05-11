@@ -2,6 +2,7 @@
 
 Run: `uv run python -m benchmarks.suites.rmsnorm`
 With HLO dump: `... --dump-hlo`
+With Mosaic dump (Pallas-side equivalent): `... --dump-mosaic`
 With xprof trace: `... --profile-dir /tmp/rmsnorm_trace`
     Then: `uv run xprof /tmp/rmsnorm_trace` (full UI on :8791), or drag
     `<dir>/plugins/profile/*/*.trace.json.gz` into ui.perfetto.dev.
@@ -83,6 +84,7 @@ def main() -> None:
             "pallas": pallas_variant(rmsnorm_pallas, block_shape=block_shape),
         },
         dump_hlo=args.dump_hlo,
+        dump_mosaic=args.dump_mosaic,
         profile_dir=args.profile_dir,
         timing=args.timing,
         config={"bs": bs, "hidden": h, "dtype": args.dtype, "block_shape": list(block_shape)},

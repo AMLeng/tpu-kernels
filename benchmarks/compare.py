@@ -13,7 +13,9 @@ Usage from a suite file:
 
 Each variant is jit-compiled, benched with the runner, and analyzed against
 the same roofline. Output is a table to stdout plus a JSON record under
-bench_history/<op>/. With `dump_hlo=True`, prints the lowered HLO per variant.
+bench_history/<op>/. With `dump_hlo=True`, prints the lowered HLO per variant;
+`dump_mosaic=True` is the Pallas-side counterpart, printing the lowered Mosaic
+IR (HLO is opaque for Pallas kernels — the body lives behind a custom_call).
 ``hw`` defaults to ``v5e()``; non-v5e hw or non-v5e host TPU raises
 ``NotImplementedError`` (this project's constants and kernels are v5e-tuned).
 """
@@ -31,6 +33,7 @@ from typing import Any, Literal
 import jax
 
 from benchmarks import _history
+from benchmarks._mosaic_dump import force_pallas_debug
 from benchmarks._pallas import pallas_variant
 from benchmarks.roofline import (
     FlopDtype,
@@ -87,6 +90,7 @@ def compare(
     warmup: int = 5,
     iters: int = 20,
     dump_hlo: bool = False,
+    dump_mosaic: bool = False,
     profile_dir: str | None = None,
     timing: Literal["unroll", "device"] = "unroll",
     write_history: bool = True,
@@ -128,6 +132,19 @@ def compare(
             try:
                 hlo = jitted.lower(*args, **kwargs).compile().as_text()
                 print(hlo)
+            except Exception as e:
+                print(f"(failed to lower {name}: {e})")
+
+    if dump_mosaic:
+        # JAX prints the Mosaic IR to stdout from inside the TPU lowering
+        # rule when pl.pallas_call(debug=True). force_pallas_debug()
+        # monkey-patches pl.pallas_call to inject debug=True for the
+        # duration; .compile() then triggers lowering.
+        for name, jitted in jitted_variants.items():
+            print(f"\n----- Mosaic: {op}::{name} -----")
+            try:
+                with force_pallas_debug():
+                    jitted.lower(*args, **kwargs).compile()
             except Exception as e:
                 print(f"(failed to lower {name}: {e})")
 

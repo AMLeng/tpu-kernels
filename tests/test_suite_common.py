@@ -49,10 +49,19 @@ def test_base_parser_no_flag_defaults() -> None:
     args = _child_parser().parse_args([])
     assert args.dtype == "bf16"
     assert args.dump_hlo is False
+    assert args.dump_mosaic is False
     assert args.profile_dir is None
     assert args.timing == "device"
     assert args.block is None
     assert args.sweep_block is None
+
+
+def test_base_parser_dump_mosaic_flag() -> None:
+    """``--dump-mosaic`` is the Pallas-side counterpart of ``--dump-hlo``;
+    HLO is opaque for Pallas kernels (the body lives behind a custom_call),
+    so this flag is the only readable handle on the lowered kernel."""
+    args = _child_parser().parse_args(["--dump-mosaic"])
+    assert args.dump_mosaic is True
 
 
 def test_base_parser_timing_accepts_device() -> None:

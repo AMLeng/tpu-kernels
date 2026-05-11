@@ -42,6 +42,15 @@ def base_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--dtype", choices=["bf16", "f32"], default="bf16")
     parser.add_argument("--dump-hlo", action="store_true")
+    parser.add_argument(
+        "--dump-mosaic",
+        action="store_true",
+        help=(
+            "Print the lowered Mosaic IR per variant. The Pallas-side "
+            "counterpart of --dump-hlo: HLO is opaque for Pallas kernels "
+            "(the body lives behind a custom_call)."
+        ),
+    )
     parser.add_argument("--profile-dir", default=None)
     parser.add_argument(
         "--timing",

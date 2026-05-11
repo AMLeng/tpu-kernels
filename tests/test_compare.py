@@ -587,6 +587,106 @@ def test_compare_passes_per_variant_subdir_to_bench_under_profile_dir(
     assert {Path(p).name for p in captured if p is not None} == {"xla", "pallas"}
 
 
+def test_compare_invokes_force_pallas_debug_per_variant_when_dump_mosaic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``compare(dump_mosaic=True)`` must wrap each variant's
+    ``.lower().compile()`` pass in ``force_pallas_debug()`` — that's what
+    forces ``pl.pallas_call(debug=True)`` for the duration of the
+    lowering, which is what makes JAX print the Mosaic IR. Without this
+    plumbing, the flag would be a silent no-op.
+    """
+    import contextlib
+
+    enters: list[str] = []
+    compiles: list[str] = []
+    inside: list[bool] = []
+    active: list[bool] = [False]
+
+    @contextlib.contextmanager
+    def fake_force() -> Any:
+        active[0] = True
+        enters.append("enter")
+        try:
+            yield
+        finally:
+            active[0] = False
+
+    monkeypatch.setattr("benchmarks.compare.force_pallas_debug", fake_force)
+
+    def fake_bench(name: str, **_kw: Any) -> BenchResult:
+        return BenchResult(name=name, times_s=[1e-3], warmup_iters=1, timed_iters=1)
+
+    monkeypatch.setattr("benchmarks.compare.bench", fake_bench)
+
+    class FakeCompiled:
+        def as_text(self) -> str:
+            return ""
+
+    class FakeLowered:
+        def compile(self) -> FakeCompiled:
+            compiles.append("compile")
+            inside.append(active[0])
+            return FakeCompiled()
+
+    class FakeJitted:
+        def lower(self, *_args: Any, **_kwargs: Any) -> FakeLowered:
+            return FakeLowered()
+
+        def __call__(self, *args: Any, **kwargs: Any) -> Any:
+            return args[0] if args else None
+
+    monkeypatch.setattr("benchmarks.compare._is_jitted", lambda _fn: True)
+
+    compare(
+        Workload(op="op", flops=1, nbytes=1, args=(jnp.zeros(1),)),
+        variants={"a": FakeJitted(), "b": FakeJitted()},
+        dump_mosaic=True,
+        write_history=False,
+    )
+
+    assert enters == ["enter", "enter"]
+    assert compiles == ["compile", "compile"]
+    # Each .compile() must have run while the patch was active — otherwise
+    # the Mosaic dump wouldn't fire even though the wrapper was entered.
+    assert inside == [True, True]
+
+
+def test_compare_does_not_invoke_force_pallas_debug_when_dump_mosaic_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default ``dump_mosaic=False`` must not patch ``pl.pallas_call`` —
+    the monkey-patch is reserved for the dump pass. Leaking it into every
+    bench run would force every Pallas variant to print its kernel jaxpr
+    and Mosaic IR on every compile."""
+    enters: list[str] = []
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def fake_force() -> Any:
+        enters.append("enter")
+        yield
+
+    monkeypatch.setattr("benchmarks.compare.force_pallas_debug", fake_force)
+
+    def fake_bench(**_kw: Any) -> BenchResult:
+        return BenchResult(name="x", times_s=[1e-3], warmup_iters=1, timed_iters=1)
+
+    monkeypatch.setattr("benchmarks.compare.bench", fake_bench)
+
+    @jax.jit
+    def f(x: jax.Array) -> jax.Array:
+        return x
+
+    compare(
+        Workload(op="op", flops=1, nbytes=1, args=(jnp.zeros(1),)),
+        variants={"v": f},
+        write_history=False,
+    )
+    assert enters == []
+
+
 def test_compare_passes_none_profile_dir_to_bench_when_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
