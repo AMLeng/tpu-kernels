@@ -1,6 +1,12 @@
 """Bench suite for the segment_cumsum op.
 
-Run: `uv run python -m benchmarks.suites.segment_cumsum`
+Single shape:
+    `uv run python -m benchmarks.suites.segment_cumsum`
+    `... --block 8192`
+
+Cartesian block sweep (Pallas tuning):
+    `... --sweep-block 1024,2048,4096,8192,16384`
+
 With HLO dump: `... --dump-hlo`
 With xprof trace: `... --profile-dir /tmp/segment_cumsum_trace`
 
@@ -8,10 +14,6 @@ Memory-bound scan (1 add per element); speed-of-light is HBM bandwidth.
 Min per-call HBM traffic: ``x`` read + ``segment_ids`` read + output
 write = ``M * (bytes_per_elem + 4 + bytes_per_elem)``, reported as
 ``nbytes``. ``segment_ids`` is int32 regardless of ``--dtype``.
-
-Pallas variant pending; for now `compare` runs xla only. No `--block` /
-`--sweep-block` here — those flags only become meaningful once the
-Pallas variant lands.
 """
 
 from __future__ import annotations
@@ -21,10 +23,12 @@ import argparse
 import jax
 import jax.numpy as jnp
 
-from benchmarks.compare import compare
-from benchmarks.suites._common import base_parser
+from benchmarks.compare import compare, pallas_variant
+from benchmarks.suites._common import base_parser, validate_block_shapes
+from benchmarks.sweep import sweep
 from benchmarks.workload import Workload
-from tpu_kernels.ops.segment_cumsum import segment_cumsum_xla
+from tpu_kernels.ops.segment_cumsum import segment_cumsum_pallas, segment_cumsum_xla
+from tpu_kernels.ops.segment_cumsum.pallas import DEFAULT_BLOCK
 
 
 def _make_parser() -> argparse.ArgumentParser:
@@ -52,12 +56,14 @@ def _make_parser() -> argparse.ArgumentParser:
         default=1024,
         help="mean segment length (sets num_segments = m // mean_length)",
     )
+    parser.set_defaults(block=list(DEFAULT_BLOCK))
     return parser
 
 
 def main() -> None:
     parser = _make_parser()
     args = parser.parse_args()
+    validate_block_shapes(args, expected_axes=1, parser=parser)
 
     if args.m % args.mean_length:
         parser.error(
@@ -89,9 +95,32 @@ def main() -> None:
         flop_dtype=args.dtype,
     )
 
+    if args.sweep_block is not None:
+        (bms,) = args.sweep_block
+
+        def is_valid(*, bm: int) -> bool:
+            # Pre-emptive divisibility filter so the sweep doesn't crash
+            # inside segment_cumsum_pallas for shapes that obviously won't
+            # tile.
+            return args.m % bm == 0
+
+        sweep(
+            workload,
+            pallas_fn=segment_cumsum_pallas,
+            axes={"bm": list(bms)},
+            is_valid=is_valid,
+            timing=args.timing,
+        )
+        return
+
+    block_shape: tuple[int] = (args.block[0],)
+
     compare(
         workload,
-        variants={"xla": segment_cumsum_xla},
+        variants={
+            "xla": segment_cumsum_xla,
+            "pallas": pallas_variant(segment_cumsum_pallas, block_shape=block_shape),
+        },
         dump_hlo=args.dump_hlo,
         profile_dir=args.profile_dir,
         timing=args.timing,
@@ -100,6 +129,7 @@ def main() -> None:
             "mean_length": args.mean_length,
             "num_segments": num_segments,
             "dtype": args.dtype,
+            "block_shape": list(block_shape),
         },
     )
 
