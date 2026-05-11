@@ -80,4 +80,10 @@ def pallas_variant(
     sees a fresh callable with a unique cache key.
     """
     _validate_block_shape_kwarg(pallas_fn)
-    return jax.jit(functools.partial(pallas_fn, block_shape=block_shape))
+    jitted = jax.jit(functools.partial(pallas_fn, block_shape=block_shape))
+    # Marker read by compare() to gate the --dump-mosaic pass: only
+    # Pallas variants produce Mosaic IR (the TPU lowering rule is what
+    # emits it), so XLA entries are skipped to avoid printing a header
+    # with no body.
+    jitted._is_pallas_variant = True  # type: ignore[attr-defined]
+    return jitted

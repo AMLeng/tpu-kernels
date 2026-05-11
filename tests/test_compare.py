@@ -505,6 +505,113 @@ def test_pallas_variant_rejects_kernel_without_block_shape_kwarg() -> None:
         pallas_variant(kernel_without_block_shape, block_shape=(8,))
 
 
+def test_pallas_variant_marks_returned_callable_as_pallas() -> None:
+    """``pallas_variant`` must stamp a marker on the returned wrapper so
+    ``compare()`` can tell Pallas variants apart from XLA ones — only the
+    former produce Mosaic IR under ``--dump-mosaic``, so XLA entries
+    should be skipped rather than print a header with no body."""
+    from benchmarks.compare import pallas_variant
+
+    def kernel(x: jax.Array, *, block_shape: tuple[int, ...]) -> jax.Array:
+        return x
+
+    variant = pallas_variant(kernel, block_shape=(64,))
+    assert getattr(variant, "_is_pallas_variant", False) is True
+
+
+def test_compare_dump_mosaic_skips_non_pallas_variants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``compare(dump_mosaic=True)`` must skip XLA-style variants entirely
+    — both the ``----- Mosaic: ... -----`` header and the
+    ``.lower().compile()`` pass. Printing a header followed by no Mosaic
+    IR is misleading, and paying for the lowering buys nothing because
+    only the TPU lowering rule (which fires for Pallas) emits the IR.
+    """
+    import contextlib
+
+    enters: list[str] = []
+
+    @contextlib.contextmanager
+    def fake_force() -> Any:
+        enters.append("enter")
+        yield
+
+    monkeypatch.setattr("benchmarks.compare.force_pallas_debug", fake_force)
+
+    def fake_bench(**_kw: Any) -> BenchResult:
+        return BenchResult(name="x", times_s=[1e-3], warmup_iters=1, timed_iters=1)
+
+    monkeypatch.setattr("benchmarks.compare.bench", fake_bench)
+
+    @jax.jit
+    def xla_fn(x: jax.Array) -> jax.Array:
+        return x
+
+    compare(
+        Workload(op="op", flops=1, nbytes=1, args=(jnp.zeros(1),)),
+        variants={"xla": xla_fn},
+        dump_mosaic=True,
+        write_history=False,
+    )
+    assert enters == []
+
+
+def test_compare_dump_mosaic_header_only_for_pallas_variants(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The Mosaic header itself must only print for Pallas variants. A
+    mixed run (xla + pallas) should show one header for the pallas row
+    and no header for the xla row."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def fake_force() -> Any:
+        yield
+
+    monkeypatch.setattr("benchmarks.compare.force_pallas_debug", fake_force)
+
+    def fake_bench(name: str, **_kw: Any) -> BenchResult:
+        return BenchResult(name=name, times_s=[1e-3], warmup_iters=1, timed_iters=1)
+
+    monkeypatch.setattr("benchmarks.compare.bench", fake_bench)
+
+    class _Compiled:
+        def as_text(self) -> str:
+            return ""
+
+    class _Lowered:
+        def compile(self) -> _Compiled:
+            return _Compiled()
+
+    class FakePallasJitted:
+        _is_pallas_variant = True
+
+        def lower(self, *_args: Any, **_kwargs: Any) -> _Lowered:
+            return _Lowered()
+
+        def __call__(self, *args: Any, **_kw: Any) -> Any:
+            return args[0] if args else None
+
+    monkeypatch.setattr("benchmarks.compare._is_jitted", lambda _fn: True)
+
+    @jax.jit
+    def xla_fn(x: jax.Array) -> jax.Array:
+        return x
+
+    compare(
+        Workload(op="op", flops=1, nbytes=1, args=(jnp.zeros(1),)),
+        variants={"xla": xla_fn, "pallas": FakePallasJitted()},
+        dump_mosaic=True,
+        write_history=False,
+    )
+
+    out = capsys.readouterr().out
+    assert "----- Mosaic: op::pallas -----" in out
+    assert "----- Mosaic: op::xla -----" not in out
+
+
 def test_pallas_variant_returns_jit_wrapped_callable_with_block_shape_baked_in(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -630,6 +737,11 @@ def test_compare_invokes_force_pallas_debug_per_variant_when_dump_mosaic(
             return FakeCompiled()
 
     class FakeJitted:
+        # Marked so compare() recognizes these as Pallas variants and
+        # routes them through the dump path; XLA-side variants are now
+        # skipped (see test_compare_dump_mosaic_skips_non_pallas_variants).
+        _is_pallas_variant = True
+
         def lower(self, *_args: Any, **_kwargs: Any) -> FakeLowered:
             return FakeLowered()
 

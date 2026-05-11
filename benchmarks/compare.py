@@ -140,7 +140,14 @@ def compare(
         # rule when pl.pallas_call(debug=True). force_pallas_debug()
         # monkey-patches pl.pallas_call to inject debug=True for the
         # duration; .compile() then triggers lowering.
+        #
+        # Skip non-Pallas variants — the TPU lowering rule is the only
+        # site that prints Mosaic IR, so XLA-side entries would emit a
+        # header with no body and pay the .lower().compile() cost for
+        # nothing. ``pallas_variant()`` is what stamps the marker.
         for name, jitted in jitted_variants.items():
+            if not getattr(jitted, "_is_pallas_variant", False):
+                continue
             print(f"\n----- Mosaic: {op}::{name} -----")
             try:
                 with force_pallas_debug():
