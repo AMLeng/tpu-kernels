@@ -22,7 +22,7 @@ import jax.numpy as jnp
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 
-DEFAULT_BLOCK = (1048576,)
+DEFAULT_BLOCK = (524288,)
 
 
 def _seg_hs_lane(vals: jax.Array, sids: jax.Array) -> jax.Array:
