@@ -52,9 +52,20 @@ def _seg_hs_lane(vals: jax.Array, sids: jax.Array, shift_mats_ref) -> jax.Array:
         # Mosaic requires f32 matmul accumulator on v5e; cast back to bf16
         # adds one truncf to the critical path. Still a small saving over
         # slice + concat (2 ops) since the matmul itself runs on the MXU
-        # in parallel with the sid roll and cmpi. Keeping the HS in f32
-        # to drop the per-level truncf trades 5 saved casts for 7 levels
-        # of 2x-slower f32 VPU ops — measured a wash, so we stay bf16.
+        # in parallel with the sid roll and cmpi.
+        #
+        # Promoting vals to f32 throughout the HS was tested and regressed
+        # ~22% BW (26.3% -> 21.6% at bm=262144). The depth=64 VPU probe
+        # (benchmarks/probe_hardware.py) measures bf16 ops at 1/3 f32
+        # throughput in isolation, but that ratio only holds while the hot
+        # loop's working set fits in ~64 vec regs. This kernel's tile
+        # (T=2048, 128) = 256 vec regs per live value, plus a per-level
+        # matmul output and mask, puts the working set well into the spill
+        # regime: a single-chain probe at varying tile sizes (M=64..2048)
+        # shows the bf16/f32 throughput ratio narrowing from 34% to 48%
+        # as M grows past 64 vec regs and the compiler spills to VMEM. In
+        # this kernel the spill cost compounds across multiple live values
+        # and bf16 wins net. Stay bf16.
         shifted_vals = jnp.dot(
             vals, shift_mats_ref[level], preferred_element_type=jnp.float32
         ).astype(vals.dtype)
