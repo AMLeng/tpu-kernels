@@ -22,10 +22,29 @@ FlopDtype = Literal["bf16", "f32", "int8"]
 # constants. Tune in one place if Google revises figures.
 V5E_BF16_PEAK_FLOPS = 197e12  # 197 TFLOP/s
 # f32 has no separately published v5e peak; the MXU is bf16-native and emulates
-# f32 matmul at roughly half rate. VPU elementwise f32 is lower again. Use this
-# as a rough upper bound; override per-kernel if you have a measured number.
+# f32 matmul at roughly half rate. VPU elementwise f32 is lower again — see
+# V5E_VPU_F32_PEAK_FLOPS below. Use this as a rough upper bound for f32 matmul;
+# override per-kernel if you have a measured number.
 V5E_F32_PEAK_FLOPS = 98e12
 V5E_INT8_PEAK_OPS = 393e12  # 393 TOPS, for int8 matmul
+
+# VPU elementwise compute peak — what kernels in the rmsnorm / softmax /
+# Hillis-Steele family hit when not memory-bound and the body has enough
+# work per iter to amortize the fori_loop overhead. Measured in
+# benchmarks.probe_hardware (parallel-ops throughput sweep, K=4096, body
+# depth = 64 serial ops/chain); see docs/v5e_vpu_findings.md for the model
+# and data. The measured peak is ~97% of the W=4 ALUs * 1.5 GHz = 6.14 TFLOPs
+# theoretical ceiling, and saturates at N=8 chains (W*L = 4*2). Skinnier
+# bodies (1-2 ops) leave most of the chip idle on fori_loop overhead --
+# kernels need either a multi-op body or aggressive unrolling to hit this
+# peak. v5e VPU clock from https://jax-ml.github.io/scaling-book/tpus/
+# (cross-checks against the API's MXU peak: 197 TFLOPs / 256*256*2 = 1.50 GHz
+# exactly, confirming MXU and VPU share the clock domain). bf16 elementwise
+# hits the same peak only if the in-loop carry is f32 — bf16 carry caps at
+# ~2.04 TFLOPs because the TPU backend inserts per-iter bf16<->f32
+# conversions below Mosaic (the VPU has no native bf16 ALU); the 3x cost
+# matches one extf + one addf + one truncf per user-add on the chain.
+V5E_VPU_F32_PEAK_FLOPS = 5.99e12
 V5E_HBM_BANDWIDTH = 819e9  # 819 GB/s
 V5E_HBM_CAPACITY = 16 * 1024**3  # 16 GiB
 V5E_VMEM_CAPACITY = 128 * 1024**2  # 128 MiB (per TensorCore; cross-checked vs pltpu.get_tpu_info)
