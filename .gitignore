@@ -31,4 +31,4 @@ tmp_profiles/
 .DS_Store
 
 # Claude Code
-.claude/settings.local.json
+.claude/
