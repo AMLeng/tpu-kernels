@@ -35,13 +35,15 @@ Four kinds of check, all reported in one run:
 
 Run::
 
-    uv run python -m benchmarks.probe_hardware           # full report
-    uv run python -m benchmarks.probe_hardware --no-probe  # API check only
+    uv run python -m benchmarks.probe_hardware                       # full report (all sections)
+    uv run python -m benchmarks.probe_hardware --probe api           # cheapest, no kernels
+    uv run python -m benchmarks.probe_hardware --probe vpu carry     # subset
 """
 
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 
 import jax
 import jax.numpy as jnp
@@ -376,21 +378,10 @@ def _run_vpu_carry_probe(
     return results
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
-    parser.add_argument(
-        "--no-probe",
-        action="store_true",
-        help="Skip the empirical Pallas-allocation probes; only do the API cross-check.",
-    )
-    args = parser.parse_args()
-
-    info = pltpu.get_tpu_info()
-    chip = info.chip_version.value  # pyright: ignore[reportAttributeAccessIssue]
-    print(f"Detected: {chip} ({info.num_cores} core(s))")
-    print()
-
-    # 1. API cross-check.
+def _section_api(info: object) -> None:
+    """Cross-check ``benchmarks/roofline.py`` constants against ``pltpu.get_tpu_info()``.
+    Cheap, no kernels — pure metadata read."""
+    del info  # rows pull from get_tpu_info() internally
     print("API vs roofline.py:")
     rows = _compare_api_to_roofline()
     width = max(len(r[0]) for r in rows)
@@ -402,34 +393,41 @@ def main() -> None:
         print(f"\n  {len(drift)} mismatch(es). Update benchmarks/roofline.py.")
     print()
 
-    if args.no_probe:
-        return
 
-    # 2. Scratch probes — kernel allocations against the live compiler.
-    # Granule scales with memory size: 1 MiB for VMEM, 4 KiB for SMEM.
-    # The compiler's actual resolution is finer; granule trades probe time
-    # (each compilation is ~1s) for displayed precision.
+def _section_scratch(info: object) -> None:
+    """Binary-search the largest VMEM/SMEM scratch the compiler accepts.
+
+    Granule scales with memory size: 1 MiB for VMEM, 4 KiB for SMEM.
+    The compiler's actual resolution is finer; granule trades probe time
+    (each compilation is ~1s) for displayed precision.
+    """
     print("Empirical probe (Pallas scratch allocation, binary search):")
-    vmem = _bisect(_try_alloc_vmem, info.vmem_capacity_bytes, granule=1024 * 1024)
+    vmem = _bisect(_try_alloc_vmem, info.vmem_capacity_bytes, granule=1024 * 1024)  # type: ignore[attr-defined]
     print(
         f"  VMEM: {vmem / 2**20:>7.2f} MiB max scratch  "
-        f"(API reports {info.vmem_capacity_bytes / 2**20:.0f} MiB)"
+        f"(API reports {info.vmem_capacity_bytes / 2**20:.0f} MiB)"  # type: ignore[attr-defined]
     )
-    smem = _bisect(_try_alloc_smem, info.smem_capacity_bytes, granule=4 * 1024)
+    smem = _bisect(_try_alloc_smem, info.smem_capacity_bytes, granule=4 * 1024)  # type: ignore[attr-defined]
     print(
         f"  SMEM: {smem / 2**10:>7.2f} KiB max scratch  "
-        f"(API reports {info.smem_capacity_bytes / 2**10:.0f} KiB)"
+        f"(API reports {info.smem_capacity_bytes / 2**10:.0f} KiB)"  # type: ignore[attr-defined]
     )
     print("Note: probe ceiling is below API capacity by however much internal scratch")
     print("each kernel reserves (a few hundred bytes for these probes).")
     print()
 
-    # 3. VPU compute — no API counterpart for VPU peak, so this is the only
-    # source. Parallel-ops throughput sweep: N independent (8, 128) chains,
-    # DEPTH serial ops per chain per iter, loop-carry forces serial within each
-    # chain. With DEPTH big enough (we use 64) the body work dominates the
-    # fori_loop floor and the plateau lands within ~3% of the chip's W=4 ALUs
-    # * 1.5 GHz theoretical peak.
+
+def _section_vpu(info: object) -> None:
+    """VPU compute peak via parallel-ops throughput sweep.
+
+    No API counterpart for VPU peak, so this is the only source. Plateau across
+    N is the total VPU bandwidth. With DEPTH big enough (we use 64) the body
+    work dominates the fori_loop floor and the plateau lands within ~3% of the
+    chip's W=4 ALUs * 1.5 GHz theoretical peak. Saturating chain count is
+    N* = W*L = 8 (intrinsic, from the scaling book). add and mul plateaus
+    should match if the slot pool is uniform across op kind.
+    """
+    del info
     results = _run_vpu_probe()
     elem_per_op = SUBLANE * LANE  # one vec inst spans this many elements
     # v5e VPU clock = 1.5 GHz, citing https://jax-ml.github.io/scaling-book/tpus/.
@@ -455,13 +453,18 @@ def main() -> None:
         )
     print()
 
-    # 4. Carry-dtype cross-check. The bf16 deficit above comes from per-iter
-    # bf16<->f32 conversions the TPU backend inserts below Mosaic — the v5e
-    # VPU has no native bf16 ALU. Holding I/O as bf16 but carrying in f32
-    # amortizes the conversion (once at load, once at store) over K iters and
-    # recovers the f32 plateau — a ~3x speedup at DEPTH=64 (matches the "1
-    # bf16 op = 3 hw ops" expectation from the chain serialising extf+addf+
-    # truncf).
+
+def _section_carry(info: object) -> None:
+    """bf16 carry-dtype cross-check.
+
+    Holding I/O as bf16 but carrying in f32 amortizes the per-iter bf16↔f32
+    conversion (once at load, once at store) over K iters and recovers the
+    f32 plateau — a ~3x speedup at DEPTH=64 (matches the "1 bf16 user-add =
+    3 hardware ops: extf + addf + truncf" expectation from the chain
+    serialising the conversions). Proves the bf16 deficit lives in the
+    post-Mosaic VPU lowering, not anywhere visible at source level.
+    """
+    del info
     carry = _run_vpu_carry_probe()
     bf16_peak = max(carry["bf16"].values())
     f32_peak = max(carry["f32"].values())
@@ -470,6 +473,43 @@ def main() -> None:
         f"(matches f32 plateau); with bf16 carry ≈ {bf16_peak:.2f} TFLOPs "
         f"({bf16_peak / f32_peak * 100:.0f}% — per-iter conversion cost)"
     )
+    print()
+
+
+# Probe registry: name → section function. main() dispatches via --probe.
+# Keep insertion order = run order when --probe all (or default) is used.
+_SECTIONS: dict[str, Callable[[object], None]] = {
+    "api": _section_api,
+    "scratch": _section_scratch,
+    "vpu": _section_vpu,
+    "carry": _section_carry,
+}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
+    parser.add_argument(
+        "--probe",
+        nargs="+",
+        choices=[*_SECTIONS, "all"],
+        default=["all"],
+        metavar="NAME",
+        help=(
+            "Which sections to run. Choices: "
+            f"{', '.join(_SECTIONS)}, or 'all' (default). "
+            "Pass multiple, e.g. '--probe vpu carry'."
+        ),
+    )
+    args = parser.parse_args()
+
+    info = pltpu.get_tpu_info()
+    chip = info.chip_version.value  # pyright: ignore[reportAttributeAccessIssue]
+    print(f"Detected: {chip} ({info.num_cores} core(s))")
+    print()
+
+    selected = list(_SECTIONS) if "all" in args.probe else args.probe
+    for name in selected:
+        _SECTIONS[name](info)
 
 
 if __name__ == "__main__":
