@@ -8,10 +8,11 @@ what the harness exists to prevent.
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 from benchmarks.roofline import V5E_VMEM_CAPACITY
 from benchmarks.suites._common import validate_block_shapes
-from benchmarks.suites.segment_cumsum import _make_parser
+from benchmarks.suites.segment_cumsum import _build_inputs, _make_parser
 
 from tpu_kernels.ops.segment_cumsum.pallas import DEFAULT_BLOCK
 
@@ -88,13 +89,34 @@ def test_default_mean_length_stresses_boundary_path() -> None:
     )
 
 
-def test_m_must_divide_mean_length() -> None:
-    """Equal-width segment construction requires ``m % mean_length == 0``;
-    catch the typo at the CLI rather than inside the bench setup."""
-    parser = _make_parser()
-    args = parser.parse_args(["--m", "1000", "--mean-length", "7"])
-    # main() calls parser.error() on the bad combination, which exits.
-    # The parser itself doesn't validate cross-arg constraints, so the
-    # check lives in main(); reproduce its precondition here so a future
-    # refactor can't silently drop it.
-    assert args.m % args.mean_length != 0
+def test_default_construction_has_within_row_boundaries() -> None:
+    """The kernel's within-row segment-reset path is what distinguishes
+    ``segment_cumsum`` from plain ``cumsum``. Any construction that lands
+    every boundary at a 128-lane row start (uniform widths divisible by
+    128 being the canonical failure) skips that path and the bench then
+    measures the wrong thing. Pin that at least some boundaries fall
+    inside rows at a representative size."""
+    args = _make_parser().parse_args(["--m", str(128 * 1024)])
+    _, segment_ids, _ = _build_inputs(args)
+    sids = np.asarray(segment_ids)
+    transitions = np.where(np.diff(sids) != 0)[0] + 1
+    assert len(transitions) > 0, "no segment boundaries at all"
+    within_row = (transitions % 128) != 0
+    assert within_row.any(), (
+        "no within-row boundaries — every transition lands at a 128-lane "
+        "row start, so the kernel runs on its plain-cumsum fast path."
+    )
+
+
+def test_build_inputs_segment_ids_cover_m() -> None:
+    """The constructed ``segment_ids`` must have one entry per element of
+    ``x`` and be non-decreasing — pin the contract the kernel relies on so
+    a future refactor of the (now non-divisible) construction can't drop
+    or duplicate elements."""
+    args = _make_parser().parse_args(["--m", "8192"])
+    x, segment_ids, num_segments = _build_inputs(args)
+    assert segment_ids.shape == x.shape
+    sids = np.asarray(segment_ids)
+    assert np.all(np.diff(sids) >= 0)
+    assert sids[0] == 0
+    assert sids[-1] == num_segments - 1

@@ -23,6 +23,7 @@ import argparse
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from benchmarks.compare import compare, pallas_variant
 from benchmarks.suites._common import base_parser, validate_block_shapes
@@ -37,28 +38,55 @@ def _make_parser() -> argparse.ArgumentParser:
     # M default clears the 4x v5e VMEM floor (CLAUDE.md / Bench inputs):
     # 2^28 bf16 elements = 512 MiB, matching scale's (16384, 16384).
     #
-    # mean_length parametrizes the workload regime. Boundary-row density
-    # is ~128/mean_length, so mean_length determines whether the kernel
-    # exercises the within-row segment-reset path (the part that
-    # distinguishes segment_cumsum from plain cumsum) or stays on the
-    # plain-cumsum fast path. num_segments would also encode this but
-    # only conditional on M, so two runs at the same num_segments and
-    # different M sit in different regimes; mean_length is M-invariant.
-    #
-    # Default mean_length=1024 mirrors realistic packed-attention training
-    # densities (typical packed seq lens 512-2048). ~12.5% of 128-lane
-    # rows have a within-row boundary at this density — enough to make
-    # the boundary-row path matter without dominating, which is the
-    # regime the kernel needs to be good at.
+    # mean_length parametrizes the workload regime via boundary-row
+    # density (~128/mean_length): too sparse and the kernel runs on the
+    # plain-cumsum fast path with negligible boundary correction, too
+    # dense and the within-row segment-reset path dominates a regime no
+    # real workload sees. Default 1024 mirrors packed-attention training
+    # densities (typical packed seq lens 512-2048). Widths themselves
+    # are *sampled* from a geometric distribution with this mean (see
+    # ``_build_inputs``) — fixed-stride boundaries let kernels exploit
+    # prefetch/branch predictability that real packed sequences don't
+    # offer, and a stride that happens to be a multiple of 128 would
+    # land every boundary at a row start and skip the within-row path
+    # entirely.
     parser.add_argument("--m", type=int, default=2**28, help="number of elements")
     parser.add_argument(
         "--mean-length",
         type=int,
         default=1024,
-        help="mean segment length (sets num_segments = m // mean_length)",
+        help="mean segment length (widths are geometrically distributed)",
     )
     parser.set_defaults(block=list(DEFAULT_BLOCK))
     return parser
+
+
+def _build_inputs(args: argparse.Namespace) -> tuple[jax.Array, jax.Array, int]:
+    """Construct ``(x, segment_ids, num_segments)`` from parsed args.
+
+    Pulled out of ``main`` so the suite-level regression tests can
+    assert on the data the bench actually feeds the kernel (per
+    CLAUDE.md's TDD-for-harness rule).
+    """
+    dtype = jnp.bfloat16 if args.dtype == "bf16" else jnp.float32
+    x = jax.random.uniform(jax.random.key(0), (args.m,), dtype=dtype)
+
+    # Variable-width segments sampled from a geometric distribution with
+    # mean `mean_length`. Fixed-width segments let an algorithm benefit
+    # from boundary-stride predictability that real packed-attention
+    # workloads don't offer; sampling produces irregular boundaries that
+    # mirror real packed sequences. Oversample 2x to be statistically
+    # sure cumulative widths cover M, then close the final segment at M
+    # so widths sum to exactly M.
+    rng = np.random.default_rng(seed=0)
+    n_oversample = max(int(2 * args.m / args.mean_length) + 100, 200)
+    widths = rng.geometric(p=1.0 / args.mean_length, size=n_oversample)
+    ends = np.cumsum(widths)
+    ends_inside = ends[ends < args.m]
+    widths_final = np.diff(np.concatenate([[0], ends_inside, [args.m]])).astype(np.int32)
+    num_segments = len(widths_final)
+    segment_ids = jnp.asarray(np.repeat(np.arange(num_segments, dtype=np.int32), widths_final))
+    return x, segment_ids, int(num_segments)
 
 
 def main() -> None:
@@ -66,21 +94,13 @@ def main() -> None:
     args = parser.parse_args()
     validate_block_shapes(args, expected_axes=1, parser=parser)
 
-    if args.m % args.mean_length:
-        parser.error(
-            f"--m ({args.m}) must be divisible by --mean-length ({args.mean_length}) "
-            f"for equal-width segments."
-        )
+    if args.mean_length > args.m:
+        parser.error(f"--mean-length ({args.mean_length}) must be <= --m ({args.m}).")
 
     dtype = jnp.bfloat16 if args.dtype == "bf16" else jnp.float32
     bytes_per_elem = jnp.dtype(dtype).itemsize
 
-    x = jax.random.normal(jax.random.key(0), (args.m,), dtype=dtype)
-    num_segments = args.m // args.mean_length
-    segment_ids = jnp.repeat(
-        jnp.arange(num_segments, dtype=jnp.int32),
-        args.mean_length,
-    )
+    x, segment_ids, num_segments = _build_inputs(args)
 
     flops = args.m  # one add per element
     nbytes = (

@@ -70,17 +70,21 @@ def test_matches_naive(
     segment_length: int,
     variant: Callable[[jax.Array, jax.Array], jax.Array],
 ) -> None:
-    x = jax.random.normal(jax.random.key(0), (n,), dtype=jnp.float32)
+    x = jax.random.uniform(jax.random.key(0), (n,), dtype=jnp.float32)
     num_segments = n // segment_length
     segment_ids = jnp.repeat(jnp.arange(num_segments, dtype=jnp.int32), segment_length)
-    # Reduction order differs from naive's linear scan, so f32 sums
-    # diverge at noise level (~sqrt(N) ulp). atol absorbs near-zero
-    # crossings where rtol blows up.
+    # Reduction order differs from naive's linear scan, and the kernel
+    # recovers per-segment cumsums by subtracting two whole-prefix sums
+    # at segment boundaries — so the absolute error scales with the
+    # *prefix magnitude* even at segment starts where the result is
+    # small. With non-negative uniform inputs the prefix grows to ~N/2,
+    # which is why atol is 10x looser than the plain-cumsum test: same
+    # algorithm, larger working magnitude.
     np.testing.assert_allclose(
         np.asarray(variant(x, segment_ids)),
         np.asarray(segment_cumsum_naive(x, segment_ids)),
-        atol=1e-4,
-        rtol=1e-4,
+        atol=1e-3,
+        rtol=1e-3,
     )
 
 
@@ -90,7 +94,7 @@ def test_pallas_handles_single_segment() -> None:
     fires unconditionally and the entering-sid match against the carry
     is always true. Exercises the cross-tile continuation path."""
     n = 1024
-    x = jax.random.normal(jax.random.key(1), (n,), dtype=jnp.float32)
+    x = jax.random.uniform(jax.random.key(1), (n,), dtype=jnp.float32)
     segment_ids = jnp.zeros((n,), dtype=jnp.int32)
     np.testing.assert_allclose(
         np.asarray(segment_cumsum_pallas(x, segment_ids, block_shape=(128,), interpret=True)),
@@ -114,7 +118,7 @@ def test_pallas_handles_uneven_segments() -> None:
             jnp.full((20,), 3, dtype=jnp.int32),
         ]
     )
-    x = jax.random.normal(jax.random.key(2), (n,), dtype=jnp.float32)
+    x = jax.random.uniform(jax.random.key(2), (n,), dtype=jnp.float32)
     np.testing.assert_allclose(
         np.asarray(segment_cumsum_pallas(x, segment_ids, block_shape=(128,), interpret=True)),
         np.asarray(segment_cumsum_naive(x, segment_ids)),
