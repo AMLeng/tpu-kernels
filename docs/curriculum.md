@@ -137,7 +137,7 @@ but the *layout* the table lives in. Ships as two ops, one per layout:
   VMEM→HBM per grid step), reaching ~69% and edging out XLA's own
   staged gather (~65%).
 
-### A.6. segment cumsum — **[planned]**
+### A.6. segment cumsum — **[done]**
 
 Memory-bound scan: cumulative sum within each segment of a segmented
 input (boundaries given by `segment_ids`). **Why Pallas was needed**:
@@ -178,15 +178,17 @@ M=2^28, and they fail in different ways:
   unrolled HLO stays manageable, especially for non-trivial
   combiners where no rewriter exists.
 
-Chunked `lax.scan` is the bar A.6's planned Pallas variant has to
-clear, and the gap is specifically about async DMA overlap. `lax.scan`
-issues each iteration's read DMA serially with the body's compute,
-which keeps HBM I/O on the critical path; Pallas exposes async DMA
-primitives, so the hypothesis A.6 is set up to test is whether
-double-buffering — issuing the next tile's read DMA in parallel with
-the current tile's compute — closes that gap. The carry-across-tiles
-mechanic itself is the same either way. The segment-reset will add
-within-tile boundary detection on top.
+The Pallas variant lands at 26.3% HBM BW @ bm=262144 — beats chunked
+`lax.scan` by ~10× by pipelining async DMAs across iterations (the
+hypothesis held), but the 80% target proved structurally unreachable.
+The within-row segmented Hillis-Steele saturates the VPU at 7 levels
+× ≥3 dependent ops/level, and the MXU-prefix variant we tried (triu-
+matmul cumsum + forward-fill boundary correction) collapsed to dense
+seg-HS cost because TPU SIMD has no sparse-on-dense propagation.
+Target parked at 80% as the regime's roofline; closing the gap would
+need MXU as the primary engine (no viable path found) or different
+silicon (e.g. SparseCore). See
+[`ops/segment_cumsum/PERF.md`](../src/tpu_kernels/ops/segment_cumsum/PERF.md).
 
 ## Stage B — Collectives (single-host v5e-N over ICI)
 
