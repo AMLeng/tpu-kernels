@@ -234,6 +234,12 @@ reject anything that isn't `Name <email>`).
 - Don't commit `bench_history/` runs from non-canonical hardware (only
   real v5e results belong in trend tracking).
 - Don't use `jnp.zeros` / `jnp.ones` as bench inputs (constant-folding).
+- Don't `pgrep -f <pattern>` in shell wait loops — the loop's own
+  command line contains the pattern, so it matches itself and
+  self-deadlocks when multiple instances stack up. Use `wait $PID` for
+  a known background PID, `pgrep -x python` (exact basename — doesn't
+  match the bash wrapper), or rely on the harness's background-task
+  completion notifications.
 
 ## Roadmap
 
