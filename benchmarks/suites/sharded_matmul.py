@@ -10,11 +10,15 @@ Single-shape bench of the local-matmul + all_reduce row-parallel linear
 over ``x`` (size ``--dp``), contracting dim sharded tensor-parallel over
 ``y`` (size ``--tp``). Defaults to a 2x2 mesh.
 
-Defaults to `--timing unroll` because the runner's device-timing path
-doesn't yet coalesce events across TPU planes (runner.py
-`_events_from_line` raises on >1 plane); unroll mode is wallclock and
-works on multi-chip. The `--timing device` default flips back when the
-harness extension lands (tracked in this op's PERF.md `Next`).
+Uses the base `--timing device` default: the runner now coalesces XPlane
+events across all TPU planes (runner.py `_coalesce_planes`), so device
+timing works multi-chip. It reads the per-call cost straight off the TPU
+clock at k=1, which sidesteps the unroll-mode trap this op exposed —
+the single-call cost (~10ms here) sits right on `_choose_k`'s 10ms target,
+so unroll flips between k=1 and k=2 on sizing noise, and because chaining a
+collective lets XLA overlap each call's all_reduce with the next call's
+matmul, the per-call number swings ~1.5x with that coin-flip. `--timing
+unroll` is still available for CPU.
 
 The suite hard-fails unless ``dp * tp`` equals the device count: the
 mesh has nowhere to land otherwise, and silently running on a different
@@ -51,7 +55,6 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--f", type=int, default=8192, help="F: output feature dim")
     parser.add_argument("--dp", type=int, default=DEFAULT_DP, help="data-parallel mesh axis size")
     parser.add_argument("--tp", type=int, default=DEFAULT_TP, help="tensor-parallel mesh axis size")
-    parser.set_defaults(timing="unroll")
     return parser
 
 
