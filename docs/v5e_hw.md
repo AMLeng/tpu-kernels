@@ -11,8 +11,8 @@ one place if Google revises figures.
 | int8 peak           | 393 TOPS          | For int8 matmul                                |
 | HBM capacity        | 16 GiB            |                                                |
 | HBM bandwidth       | 819 GB/s          |                                                |
-| VMEM capacity       | 32 MiB            | Per TensorCore                                 |
-| ICI per link        | 200 GB/s          | 1.6 Tbps; topology is 2D torus on multi-chip   |
+| VMEM capacity       | 128 MiB           | Per TensorCore; cross-checked vs pltpu.get_tpu_info |
+| ICI per link (bidi) | 90 GB/s           | 45 GB/s/direction; 4 links → 360 GB/s/chip aggregate. One-way aggregate (200 GB/s) is the "1.6 Tbps" headline. 2D torus on multi-chip. |
 
 Ridge point (peak_flops / peak_bw) ≈ **240 FLOPs/byte**. Below that you're
 memory-bound, above you're compute-bound. RMSNorm/softmax sit far below;
