@@ -366,32 +366,35 @@ def _parse_xplane_durations(
     """Find xplane.pb in profile_dir, return per-call durations (s) and a
     cluster-mismatch flag.
 
-    Reads the TPU plane's ``XLA Modules`` line and groups consecutive
-    events into ``expected`` per-call buckets via ``_per_call_durations``.
-    A jit'd Python call may dispatch more than one XLA program (e.g.
-    cumsum's triangular reduce_window lowers to 3 sequential scan
-    levels), so events are not 1:1 with iters in general. ``mismatch``
-    is True when the event count doesn't divide evenly by ``expected``;
-    callers stash it on BenchResult so trend tooling can spot a run
-    where the parse went sideways.
+    Reads every TPU plane's ``XLA Modules`` line, clusters each plane's
+    events into ``expected`` per-call buckets via ``_per_call_durations``
+    (a jit'd Python call may dispatch more than one XLA program — cumsum's
+    triangular reduce_window lowers to 3 sequential scan levels), then folds
+    the planes into one per-call duration via ``_coalesce_planes`` (the
+    per-call max across chips). On a sharded run each chip contributes a
+    plane; on single-chip there is just one. ``mismatch`` is True when the
+    parse can't be trusted — a plane's events don't divide ``expected``, or
+    the chips disagree on event count; callers stash it on BenchResult so
+    trend tooling can spot a run where the parse went sideways.
     """
     from jax.profiler import ProfileData
 
     xplane_path = _find_xplane(profile_dir)
     pd = ProfileData.from_file(xplane_path)
-    events = _xla_module_events(pd)
-    if not events:
+    per_plane_events = _xla_module_events(pd)
+    if not per_plane_events:
         raise RuntimeError(
             f"no XLA Modules events in {xplane_path}; XPlane was empty or "
             "the TPU plane has a different name on this hardware."
         )
-    durations, mismatch = _per_call_durations(events, expected)
+    durations, mismatch = _coalesce_planes(per_plane_events, expected)
     if mismatch:
+        counts = [len(ev) for ev in per_plane_events]
         warnings.warn(
-            f"timing='device': expected {expected} per-call durations from "
-            f"XLA Modules events, got {len(events)} events that don't "
-            f"divide evenly by {expected}. cluster_mismatch=True on the "
-            "result.",
+            f"timing='device': a TPU plane's event count (counts={counts} "
+            f"across {len(per_plane_events)} plane(s)) doesn't divide evenly "
+            f"by {expected} iters, so per-call clustering can't be trusted. "
+            "cluster_mismatch=True on the result.",
             stacklevel=3,
         )
     return durations, mismatch
@@ -428,6 +431,47 @@ def _per_call_durations(
     return [e[2] * 1e-9 for e in events], True
 
 
+def _coalesce_planes(
+    per_plane_events: list[list[_EventTuple]],
+    iters: int,
+) -> tuple[list[float], bool]:
+    """Collapse N chip planes' event streams into one per-call duration list.
+
+    Each chip runs the same SPMD program, but chips do *not* record the same
+    number of module events: a collective makes the coordinator chip emit
+    extra setup/reshard modules around the all-reduce (observed
+    ``[60,20,20,20]`` events at iters=20 for sharded_matmul — 3 modules/call
+    on chip 0 vs 1 on the others). So we cluster each plane independently
+    with ``_per_call_durations`` against ``iters`` — different per-call module
+    counts are fine, every plane still yields ``iters`` per-call durations —
+    then report the per-call max across planes. The slowest chip bounds the
+    cluster and gates any collective. Only per-call durations are compared
+    across planes, never absolute timestamps, so plane clocks need not share
+    an origin.
+
+    ``mismatch=True`` (with an untrustworthy degraded payload) when a plane's
+    event count doesn't divide evenly by ``iters`` — that plane can't be
+    bucketed, so modules-per-call genuinely varied across iters or the
+    xplane is pathological. Mirrors the single-plane fallback: return that
+    plane's raw per-event durations so downstream trend tooling can drop the
+    run rather than consume wrong numbers. Empty input yields ``([], False)``;
+    the caller decides whether an empty profile is an error.
+    """
+    if not per_plane_events:
+        return [], False
+
+    per_plane_durations: list[list[float]] = []
+    for events in per_plane_events:
+        durations, mismatch = _per_call_durations(events, iters)
+        if mismatch:
+            return durations, True
+        per_plane_durations.append(durations)
+
+    # Every plane clustered to ``iters`` durations → elementwise max per call.
+    coalesced = [max(per_call) for per_call in zip(*per_plane_durations, strict=True)]
+    return coalesced, False
+
+
 def _find_xplane(profile_dir: str) -> str:
     """Recursive scan for *.xplane.pb; on multiple matches, return the newest.
 
@@ -449,14 +493,18 @@ def _find_xplane(profile_dir: str) -> str:
     return max(candidates, key=os.path.getmtime)
 
 
-def _events_from_line(pd: Any, line_name: str) -> list[_EventTuple]:
-    """Collect events from a named line on the single active TPU plane.
+def _events_from_line(pd: Any, line_name: str) -> list[list[_EventTuple]]:
+    """Collect events per TPU plane from a named line.
 
-    Returns [] if no TPU plane has events on that line. Single-chip-only:
-    if events are present on more than one TPU plane we raise rather than
-    silently pick one, since BW% derived from one chip's events would
-    understate a sharded execution. Multi-chip support waits for the first
-    sharded suite.
+    Returns one event list per TPU plane that has events on ``line_name``,
+    ordered by plane name so downstream coalescing is deterministic. Empty
+    outer list when no TPU plane has events. Each inner list holds that
+    plane's events in trace order.
+
+    A sharded run records the same SPMD program on every chip, so a
+    multi-chip profile yields one stream per chip; ``_coalesce_planes``
+    collapses them into one per-call duration. Host planes (multi-host) are
+    skipped.
     """
     found: list[tuple[str, list[_EventTuple]]] = []
     for plane in pd.planes:
@@ -470,31 +518,27 @@ def _events_from_line(pd: Any, line_name: str) -> list[_EventTuple]:
             events = [(int(e.start_ns), int(e.end_ns), int(e.duration_ns)) for e in line.events]
             if events:
                 found.append((plane.name, events))
-    if not found:
-        return []
-    if len(found) > 1:
-        names = [name for name, _ in found]
-        raise RuntimeError(
-            f"timing='device' found {line_name!r} events on multiple TPU planes "
-            f"({names}); sharded execution isn't supported yet. Run on a "
-            "single chip or extend the parser to coalesce planes."
-        )
-    return found[0][1]
+    # Sort by plane name ("/device:TPU:0", ":1", ...) for a stable order;
+    # the coalesce step only compares per-call durations, but a deterministic
+    # ordering keeps the mismatch fallback ("longest plane") reproducible.
+    found.sort(key=lambda name_events: name_events[0])
+    return [events for _name, events in found]
 
 
-def _xla_module_events(pd: Any) -> list[_EventTuple]:
-    """Per-program-execution events from the TPU plane's XLA Modules line.
+def _xla_module_events(pd: Any) -> list[list[_EventTuple]]:
+    """Per-program-execution events from every TPU plane's XLA Modules line.
 
-    Each event is one full XLA program execution: ``start_ns`` is launch,
-    ``end_ns`` is completion, ``duration_ns`` is the wall time of that
-    execution. The line has no nesting, but a single jit'd Python call
-    may dispatch more than one program — cumsum's triangular
-    ``reduce_window`` is rewritten on TPU into a 3-level sequential scan
-    that surfaces here as 3 events per call. ``_per_call_durations``
-    clusters consecutive events back into one duration per Python call.
-    The XLA Ops line is sibling-and-children HLO ops; reading durations
-    from it double-counts when the program contains an HLO ``while``
-    (e.g. ``lax.scan``), since the parent op's duration covers its
+    One inner list per chip plane (see ``_events_from_line``). Each event is
+    one full XLA program execution: ``start_ns`` is launch, ``end_ns`` is
+    completion, ``duration_ns`` is the wall time of that execution. The line
+    has no nesting, but a single jit'd Python call may dispatch more than one
+    program — cumsum's triangular ``reduce_window`` is rewritten on TPU into
+    a 3-level sequential scan that surfaces here as 3 events per call.
+    ``_per_call_durations`` clusters consecutive events back into one
+    duration per Python call; ``_coalesce_planes`` then folds the planes
+    together. The XLA Ops line is sibling-and-children HLO ops; reading
+    durations from it double-counts when the program contains an HLO
+    ``while`` (e.g. ``lax.scan``), since the parent op's duration covers its
     children's.
     """
     return _events_from_line(pd, "XLA Modules")

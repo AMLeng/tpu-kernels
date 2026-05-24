@@ -15,6 +15,7 @@ from benchmarks.runner import (
     BenchResult,
     _build_unrolled,
     _choose_k,
+    _coalesce_planes,
     _find_xplane,
     _per_call_durations,
     _xla_module_events,
@@ -415,8 +416,10 @@ def test_xla_module_events_returns_one_event_per_program_execution() -> None:
         ]
     )
     assert _xla_module_events(pd) == [
-        (0, 60_000_000, 60_000_000),
-        (70_000_000, 130_000_000, 60_000_000),
+        [
+            (0, 60_000_000, 60_000_000),
+            (70_000_000, 130_000_000, 60_000_000),
+        ]
     ]
 
 
@@ -431,17 +434,21 @@ def test_xla_module_events_returns_empty_when_no_tpu_plane() -> None:
     assert _xla_module_events(pd) == []
 
 
-def test_xla_module_events_raises_on_multiple_tpu_planes_with_events() -> None:
-    """Sharded execution would record events on every chip's plane;
-    silently picking one would understate BW% by 1/N."""
+def test_xla_module_events_returns_one_stream_per_tpu_plane() -> None:
+    """Sharded execution records events on every chip's plane. Rather than
+    raise (the pre-coalescing behavior) or silently pick one (which would
+    understate BW% by 1/N), return one event stream per plane, ordered by
+    plane name so the coalesce step is deterministic."""
     pd = _FakePD(
         [
+            _FakePlane("/device:TPU:1", [_FakeLine("XLA Modules", [_FakeEvent(5, 35, 30)])]),
             _FakePlane("/device:TPU:0", [_FakeLine("XLA Modules", [_FakeEvent(0, 10, 10)])]),
-            _FakePlane("/device:TPU:1", [_FakeLine("XLA Modules", [_FakeEvent(0, 10, 10)])]),
         ]
     )
-    with pytest.raises(RuntimeError, match=r"(?i)multiple.*tpu|sharded"):
-        _xla_module_events(pd)
+    assert _xla_module_events(pd) == [
+        [(0, 10, 10)],  # TPU:0 sorts before TPU:1
+        [(5, 35, 30)],
+    ]
 
 
 # ---- _per_call_durations: cluster XLA Modules events per Python call ----
@@ -502,6 +509,112 @@ def test_per_call_durations_marks_mismatch_when_count_doesnt_divide_iters() -> N
     durations, mismatch = _per_call_durations(events, iters=2)
     assert mismatch is True
     assert durations == pytest.approx([0.010, 0.010, 0.010])
+
+
+# ---- _coalesce_planes: combine per-plane streams into one per-call list --
+
+
+def test_coalesce_planes_single_plane_is_identity() -> None:
+    """One plane (single-chip run) must reproduce the pre-coalescing
+    numbers exactly: max over a single plane is that plane's durations."""
+    per_plane = [
+        [
+            (0, 60_000_000, 60_000_000),
+            (70_000_000, 130_000_000, 60_000_000),
+        ]
+    ]
+    durations, mismatch = _coalesce_planes(per_plane, iters=2)
+    assert durations == pytest.approx([0.060, 0.060])
+    assert mismatch is False
+
+
+def test_coalesce_planes_takes_max_per_call_across_planes() -> None:
+    """SPMD: each chip runs the same program. Per call we report the
+    slowest chip (max per-plane duration) — it bounds the cluster and
+    gates any collective. Only intra-plane durations are compared, never
+    absolute timestamps, so plane clocks need not share an origin."""
+    per_plane = [
+        # chip 0: call 0 = 40ms, call 1 = 60ms
+        [(0, 40_000_000, 40_000_000), (50_000_000, 110_000_000, 60_000_000)],
+        # chip 1: call 0 = 55ms, call 1 = 45ms
+        [(0, 55_000_000, 55_000_000), (60_000_000, 105_000_000, 45_000_000)],
+    ]
+    durations, mismatch = _coalesce_planes(per_plane, iters=2)
+    assert durations == pytest.approx([0.055, 0.060])  # max(40,55), max(60,45)
+    assert mismatch is False
+
+
+def test_coalesce_planes_sums_multi_module_calls_per_plane_then_maxes() -> None:
+    """Each plane is clustered into per-call durations first (summing the
+    multi-module-per-call case, e.g. cumsum's 3-level scan), and only then
+    are planes maxed. iters=1, 3 modules per call, two planes."""
+    per_plane = [
+        [
+            (0, 10_000_000, 10_000_000),
+            (10_000_000, 20_000_000, 10_000_000),
+            (20_000_000, 30_000_000, 10_000_000),
+        ],  # chip 0: 30ms total
+        [
+            (0, 12_000_000, 12_000_000),
+            (12_000_000, 24_000_000, 12_000_000),
+            (24_000_000, 36_000_000, 12_000_000),
+        ],  # chip 1: 36ms total
+    ]
+    durations, mismatch = _coalesce_planes(per_plane, iters=1)
+    assert durations == pytest.approx([0.036])  # max(0.030, 0.036)
+    assert mismatch is False
+
+
+def test_coalesce_planes_handles_asymmetric_module_counts_across_chips() -> None:
+    """Chips legitimately differ in modules-per-call: a collective makes the
+    coordinator chip record extra setup/reshard modules around the
+    all-reduce (observed [60,20,20,20] events at iters=20 for sharded_matmul,
+    i.e. 3 modules/call on chip 0 vs 1 on the others). Each plane is
+    clustered independently against ``iters``, so differing per-call module
+    counts are fine — we sum each plane's call then max across planes."""
+    per_plane = [
+        # coordinator: 3 modules/call, 2 calls; each call sums to 10ms
+        [
+            (0, 1_000_000, 1_000_000),
+            (1_000_000, 2_000_000, 1_000_000),
+            (2_000_000, 10_000_000, 8_000_000),
+            (20_000_000, 21_000_000, 1_000_000),
+            (21_000_000, 22_000_000, 1_000_000),
+            (22_000_000, 30_000_000, 8_000_000),
+        ],
+        # worker: 1 module/call, 9ms each
+        [(0, 9_000_000, 9_000_000), (20_000_000, 29_000_000, 9_000_000)],
+    ]
+    durations, mismatch = _coalesce_planes(per_plane, iters=2)
+    assert durations == pytest.approx([0.010, 0.010])  # max(10ms, 9ms) per call
+    assert mismatch is False
+
+
+def test_coalesce_planes_marks_mismatch_when_count_doesnt_divide_iters() -> None:
+    """A per-plane stream that doesn't divide evenly by iters can't be
+    clustered; propagate mismatch from the per-plane parse."""
+    per_plane = [
+        [
+            (0, 10_000_000, 10_000_000),
+            (10_000_000, 20_000_000, 10_000_000),
+            (20_000_000, 30_000_000, 10_000_000),
+        ],
+        [
+            (0, 10_000_000, 10_000_000),
+            (10_000_000, 20_000_000, 10_000_000),
+            (20_000_000, 30_000_000, 10_000_000),
+        ],
+    ]
+    _durations, mismatch = _coalesce_planes(per_plane, iters=2)
+    assert mismatch is True
+
+
+def test_coalesce_planes_empty_returns_empty_no_mismatch() -> None:
+    """No TPU plane with events (e.g. CPU) yields an empty duration list;
+    the caller decides whether that's an error."""
+    durations, mismatch = _coalesce_planes([], iters=2)
+    assert durations == []
+    assert mismatch is False
 
 
 # Keep jax import live (avoids "imported but unused" if all tests above are
