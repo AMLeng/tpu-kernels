@@ -41,9 +41,9 @@ from benchmarks.roofline import (
     Roofline,
     analyze,
     arithmetic_intensity,
+    binding_regime,
     check_supported_hardware,
     peak_flops_for,
-    regime,
     v5e,
 )
 from benchmarks.runner import BenchResult, bench
@@ -241,15 +241,27 @@ def _print_table(
 ) -> None:
     arith_intensity = arithmetic_intensity(flops, nbytes)
     peak = peak_flops_for(hw, flop_dtype)
-    ridge = (peak / hw.total_hbm_bw) if hw.total_hbm_bw else float("inf")
-    regime_label = regime(arith_intensity, ridge)
+    hbm_ridge = (peak / hw.total_hbm_bw) if hw.total_hbm_bw else float("inf")
     show_ici = ici_bytes > 0
+    # Verdict spans all three roofs (compute / HBM / ICI). For single-chip runs
+    # the ICI floor is zero, so this collapses to the old compute-vs-memory call.
+    verdict = binding_regime(flops, nbytes, ici_bytes, hw, flop_dtype)
 
     print(f"\n=== {op} ({hw.num_chips} chip{'s' if hw.num_chips > 1 else ''}) ===")
     print(f"  flops={flops:.3e}  bytes={nbytes:.3e}  intensity={arith_intensity:.1f} F/B")
+    print(
+        f"  HBM ridge (peak_flops/hbm_bw) = {hbm_ridge:.1f} F/B"
+        f"  (intensity {arith_intensity:.1f} F/B)"
+    )
     if show_ici:
+        ici_ridge = (peak / hw.total_ici_bw) if hw.total_ici_bw else float("inf")
+        ici_intensity = arithmetic_intensity(flops, ici_bytes)
         print(f"  ici_bytes={ici_bytes:.3e}  ici_peak={hw.total_ici_bw:.3e} B/s")
-    print(f"  ridge point (peak_flops/peak_bw) = {ridge:.1f} F/B  →  {regime_label}")
+        print(
+            f"  ICI ridge (peak_flops/ici_bw) = {ici_ridge:.1f} F/B"
+            f"  (ici intensity {ici_intensity:.1f} F/B)"
+        )
+    print(f"  →  {verdict}")
     print()
     header = f"  {'variant':<20} {'med(ms)':>9} {'p99(ms)':>9} {'MFU%':>7} {'BW%':>7}"
     if show_ici:

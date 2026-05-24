@@ -75,6 +75,54 @@ def _init_repo(path: Path) -> None:
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=path, check=True)
 
 
+def test_print_table_shows_ici_ridge_line_when_sharded(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """Sharded runs (ici_bytes > 0) get a second ridge line for the ICI roof,
+    so an ICI bottleneck is visible next to the HBM one."""
+    flops, nbytes, ici_bytes = 1_000_000, 1_000, 1_000
+    hw = v5e(num_chips=4)
+    _print_table("dummy", hw, flops, nbytes, ici_bytes, [_row("bf16", flops, nbytes)], "bf16")
+    out = capsys.readouterr().out
+    assert "ICI ridge" in out
+
+
+def test_print_table_no_ici_ridge_line_single_chip(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """Single-chip runs (ici_bytes == 0) have no ICI roof — don't print one."""
+    flops, nbytes = 1_000_000, 1_000
+    _print_table("dummy", v5e(), flops, nbytes, 0, [_row("bf16", flops, nbytes)], "bf16")
+    out = capsys.readouterr().out
+    assert "ICI ridge" not in out
+
+
+def test_print_table_labels_ici_bound_when_ici_floor_dominates(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """When cross-chip traffic is the binding floor, the verdict is ici-bound —
+    not the compute/memory the HBM-only ridge would report."""
+    flops, nbytes, ici_bytes = 10**9, 10**6, 10**11
+    hw = v5e(num_chips=4)
+    _print_table("dummy", hw, flops, nbytes, ici_bytes, [_row("bf16", flops, nbytes)], "bf16")
+    out = capsys.readouterr().out
+    assert "ici-bound" in out
+    assert "memory-bound" not in out
+
+
+def test_print_table_labels_compute_bound_when_sharded_but_compute_dominates(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """A sharded matmul whose flops dwarf both HBM and ICI traffic stays
+    compute-bound — the ICI ridge line shows but doesn't flip the verdict."""
+    flops, nbytes, ici_bytes = 10**12, 10**6, 10**6
+    hw = v5e(num_chips=4)
+    _print_table("dummy", hw, flops, nbytes, ici_bytes, [_row("bf16", flops, nbytes)], "bf16")
+    out = capsys.readouterr().out
+    assert "compute-bound" in out
+    assert "ici-bound" not in out
+
+
 def test_git_sha_clean_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _init_repo(tmp_path)
     monkeypatch.setattr("benchmarks._history.REPO_ROOT", tmp_path)

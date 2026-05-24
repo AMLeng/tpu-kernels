@@ -22,6 +22,7 @@ from benchmarks.roofline import (
     V5E_VMEM_CAPACITY,
     HardwarePeak,
     analyze,
+    binding_regime,
     check_supported_hardware,
     peak_flops_for,
     regime,
@@ -36,9 +37,23 @@ def test_v5e_constants_match_announcement() -> None:
     assert hw.f32_flops == V5E_F32_PEAK_FLOPS == 98e12
     assert hw.int8_ops == V5E_INT8_PEAK_OPS == 393e12
     assert hw.hbm_bw == V5E_HBM_BANDWIDTH == 819e9
-    assert hw.ici_bw_per_link == V5E_ICI_PER_LINK == 200e9
+    # Bidirectional per-link ICI: 90 GB/s (45 GB/s/direction), per the jax-ml
+    # scaling book. 4 links → 360 GB/s/chip bidirectional aggregate.
+    assert hw.ici_bw_per_link == V5E_ICI_PER_LINK == 90e9
     assert hw.ici_links_per_chip == V5E_ICI_LINKS_PER_CHIP == 4
     assert hw.num_chips == 1
+
+
+def test_v5e_aggregate_ici_is_well_below_hbm() -> None:
+    """Regression: ICI was mislabelled at 200 GB/s *per link* (x4 -> 800 GB/s/chip),
+    making the ICI roof rival HBM. The real per-chip aggregate is 360 GB/s
+    bidirectional — well under half the 819 GB/s HBM, so cross-chip traffic
+    binds far sooner than HBM does. Pin that ordering so the double-count
+    can't return.
+    """
+    hw = v5e()
+    assert hw.total_ici_bw == 360e9
+    assert hw.total_ici_bw < hw.total_hbm_bw / 2
 
 
 def test_v5e_scales_with_num_chips() -> None:
@@ -204,6 +219,42 @@ def test_regime_handles_infinite_intensity() -> None:
     # Zero-byte kernels (compute-only on registers) report inf intensity;
     # they should still classify as compute-bound, not blow up.
     assert regime(arithmetic_intensity=float("inf"), ridge_point=240.0) == "compute-bound"
+
+
+def test_binding_regime_compute_bound() -> None:
+    # High intensity against both HBM and ICI → compute floor dominates.
+    hw = v5e(num_chips=4)
+    assert binding_regime(flops=10**12, nbytes=10**6, ici_bytes=10**6, hw=hw) == "compute-bound"
+
+
+def test_binding_regime_memory_bound() -> None:
+    # Tiny flops, large HBM traffic, negligible ICI → HBM floor dominates.
+    hw = v5e(num_chips=4)
+    assert binding_regime(flops=1, nbytes=10**11, ici_bytes=1, hw=hw) == "memory-bound"
+
+
+def test_binding_regime_ici_bound() -> None:
+    # Cross-chip traffic dwarfs both compute and HBM floors → ICI binds.
+    # This is the case the single-resource `regime()` could never surface.
+    hw = v5e(num_chips=4)
+    assert binding_regime(flops=10**9, nbytes=10**6, ici_bytes=10**11, hw=hw) == "ici-bound"
+
+
+def test_binding_regime_single_chip_never_ici() -> None:
+    # ici_bytes=0 (the default single-chip path) collapses to the 2-way
+    # compute/memory split and agrees with `regime()`.
+    hw = v5e()
+    assert binding_regime(flops=10**12, nbytes=10**6, ici_bytes=0, hw=hw) == "compute-bound"
+    assert binding_regime(flops=1, nbytes=10**9, ici_bytes=0, hw=hw) == "memory-bound"
+
+
+def test_binding_regime_respects_flop_dtype() -> None:
+    # int8 ridge is ~2x the bf16 ridge; at intensity 300 F/B the same workload
+    # is compute-bound in bf16 but memory-bound in int8.
+    hw = v5e()
+    flops, nbytes = 300_000, 1_000
+    assert binding_regime(flops, nbytes, ici_bytes=0, hw=hw, flop_dtype="bf16") == "compute-bound"
+    assert binding_regime(flops, nbytes, ici_bytes=0, hw=hw, flop_dtype="int8") == "memory-bound"
 
 
 class _FakeDevice:

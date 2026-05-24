@@ -49,7 +49,14 @@ V5E_HBM_BANDWIDTH = 819e9  # 819 GB/s
 V5E_HBM_CAPACITY = 16 * 1024**3  # 16 GiB
 V5E_VMEM_CAPACITY = 128 * 1024**2  # 128 MiB (per TensorCore; cross-checked vs pltpu.get_tpu_info)
 V5E_SMEM_CAPACITY = 1 * 1024**2  # 1 MiB scalar scratchpad (per TensorCore)
-V5E_ICI_PER_LINK = 200e9  # 200 GB/s per link (1600 Gbps), torus topology
+# ICI per link, bidirectional: 90 GB/s (45 GB/s per direction). 4 links →
+# 360 GB/s/chip aggregate bidirectional — well under half the 819 GB/s HBM,
+# so cross-chip traffic binds long before HBM does. Source: jax-ml scaling
+# book v5e row (4.5e10 one-way / 9.0e10 bidirectional per link). Note the
+# Google "1.6 Tbps per chip" headline is the *one-way aggregate* across all 4
+# links (1.6 Tbps = 200 GB/s); an earlier 200e9 here mistook that per-chip
+# aggregate for the per-link rate and then multiplied by 4 links again.
+V5E_ICI_PER_LINK = 90e9
 V5E_ICI_LINKS_PER_CHIP = 4  # 2D torus: 2 links per axis, 2 axes
 
 
@@ -170,6 +177,10 @@ def arithmetic_intensity(flops: int, nbytes: int) -> float:
 
 
 Regime = Literal["compute-bound", "memory-bound"]
+# Three-way regime for sharded kernels: a kernel can be limited by cross-chip
+# ICI bandwidth, not just compute or local HBM. `binding_regime` resolves all
+# three; `regime` stays two-way for the single-chip path.
+BindingRegime = Literal["compute-bound", "memory-bound", "ici-bound"]
 
 
 def regime(arithmetic_intensity: float, ridge_point: float) -> Regime:
@@ -180,6 +191,49 @@ def regime(arithmetic_intensity: float, ridge_point: float) -> Regime:
     "compute-bound" matches the `Roofline.binds` rule for consistency.
     """
     return "compute-bound" if arithmetic_intensity >= ridge_point else "memory-bound"
+
+
+def _binding_floor(compute_s: float, memory_s: float, ici_s: float) -> str:
+    """Pick the binding resource from three floor times.
+
+    Single source of truth for the tie-break order (compute → memory → ici)
+    shared by `Roofline.binds` and `binding_regime`, so the per-run table and
+    the workload-level verdict can never disagree about which limit binds.
+    """
+    if compute_s >= memory_s and compute_s >= ici_s:
+        return "compute"
+    if memory_s >= ici_s:
+        return "memory"
+    return "ici"
+
+
+def binding_regime(
+    flops: int,
+    nbytes: int,
+    ici_bytes: int,
+    hw: HardwarePeak,
+    flop_dtype: FlopDtype = "bf16",
+) -> BindingRegime:
+    """Classify which physical limit binds a *workload* (no measured runtime).
+
+    Three-way generalization of `regime()` for sharded kernels. `regime`
+    compares arithmetic intensity to a single (HBM) ridge — equivalent to
+    asking whether the compute floor exceeds the HBM floor. That can't see an
+    ICI bottleneck. Here we compute all three floor times directly and return
+    whichever binds, so a kernel that clears both the compute and HBM ridges
+    but drowns in cross-chip traffic is correctly labelled `ici-bound`.
+
+    `ici_bytes == 0` (single-chip) zeroes the ICI floor, collapsing this to the
+    compute-vs-memory split that `regime()` reports.
+    """
+    peak = peak_flops_for(hw, flop_dtype)
+    compute_s = flops / peak if peak else 0.0
+    memory_s = nbytes / hw.total_hbm_bw if hw.total_hbm_bw else 0.0
+    ici_s = ici_bytes / hw.total_ici_bw if (ici_bytes and hw.total_ici_bw) else 0.0
+    binds = _binding_floor(compute_s, memory_s, ici_s)
+    if binds == "compute":
+        return "compute-bound"
+    return "memory-bound" if binds == "memory" else "ici-bound"
 
 
 @dataclass(frozen=True)
@@ -222,12 +276,7 @@ class Roofline:
     @property
     def binds(self) -> str:
         """Which limit binds. Tie-break order: compute → memory → ici."""
-        cf, mf, icf = self.compute_floor_s, self.memory_floor_s, self.ici_floor_s
-        if cf >= mf and cf >= icf:
-            return "compute"
-        if mf >= icf:
-            return "memory"
-        return "ici"
+        return _binding_floor(self.compute_floor_s, self.memory_floor_s, self.ici_floor_s)
 
     @property
     def arithmetic_intensity(self) -> float:
