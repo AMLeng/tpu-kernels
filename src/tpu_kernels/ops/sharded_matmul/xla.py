@@ -6,8 +6,9 @@ the two from drifting apart; once we have a non-trivial JAX rewrite
 worth comparing — collective-aware reshard, manual reduce_scatter +
 all_gather, etc. — this is where it lands.
 
-``dp`` / ``tp`` are ``static_argnames``: they pick the mesh shape, so
-they must be compile-time constants rather than traced values.
+``mesh`` is a ``static_argname``: it carries the sharding the caller
+(harness, see ``sharding.py``) built and placed the inputs on, so it must
+be a compile-time constant rather than a traced value.
 """
 
 from __future__ import annotations
@@ -16,4 +17,4 @@ import jax
 
 from tpu_kernels.ops.sharded_matmul.naive import matmul as _naive
 
-matmul = jax.jit(_naive, static_argnames=("dp", "tp"))
+matmul = jax.jit(_naive, static_argnames=("mesh",))

@@ -45,7 +45,12 @@ from benchmarks.roofline import v5e
 from benchmarks.suites._common import base_parser
 from benchmarks.workload import Workload
 from tpu_kernels.ops.sharded_matmul import sharded_matmul_naive, sharded_matmul_xla
-from tpu_kernels.ops.sharded_matmul.naive import DEFAULT_DP, DEFAULT_TP
+from tpu_kernels.ops.sharded_matmul.sharding import (
+    DEFAULT_DP,
+    DEFAULT_TP,
+    make_mesh,
+    shard_inputs,
+)
 
 
 def _make_parser() -> argparse.ArgumentParser:
@@ -73,8 +78,17 @@ def main() -> None:
     bytes_per_elem = jnp.dtype(dtype).itemsize
     batch, d, f = args.batch, args.d, args.f
     dp, tp = args.dp, args.tp
-    a = jax.random.normal(jax.random.key(0), (batch, d), dtype=dtype)  # A[B, D]
-    w = jax.random.normal(jax.random.key(1), (d, f), dtype=dtype)  # W[D, F]
+    # Build the mesh once and place the inputs on it before timing: in
+    # production the activation/weight are already sharded across the mesh, so
+    # the timed call should not pay a per-call scatter to lay them out for
+    # shard_map. shard_inputs commits A to P(x, y) and W to P(y, None) — the
+    # exact in_specs the kernel expects — so no reshard rides the hot path.
+    mesh = make_mesh(dp, tp)
+    a, w = shard_inputs(
+        mesh,
+        jax.random.normal(jax.random.key(0), (batch, d), dtype=dtype),  # A[B, D]
+        jax.random.normal(jax.random.key(1), (d, f), dtype=dtype),  # W[D, F]
+    )
 
     # Cluster totals (the harness divides by `total_*` peaks, which scale by
     # num_chips). 2*B*D*F total compute is the same as the unsharded matmul —
@@ -101,8 +115,8 @@ def main() -> None:
     compare(
         workload,
         variants={
-            "naive": partial(sharded_matmul_naive, dp=dp, tp=tp),
-            "xla": partial(sharded_matmul_xla, dp=dp, tp=tp),
+            "naive": partial(sharded_matmul_naive, mesh=mesh),
+            "xla": partial(sharded_matmul_xla, mesh=mesh),
         },
         hw=v5e(num_chips=n_devices),
         ici_bytes=ici_bytes,

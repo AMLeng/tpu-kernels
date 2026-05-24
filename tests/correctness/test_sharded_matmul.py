@@ -10,15 +10,23 @@ skips the module cleanly via the marker below.
 from __future__ import annotations
 
 from collections.abc import Callable
-from functools import partial
 from typing import Any
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from jax.sharding import NamedSharding
+from jax.sharding import PartitionSpec as P
 
 from tpu_kernels.ops.sharded_matmul import sharded_matmul_naive, sharded_matmul_xla
+from tpu_kernels.ops.sharded_matmul.sharding import (
+    MESH_AXES,
+    input_specs,
+    make_mesh,
+    output_spec,
+    shard_inputs,
+)
 
 MIN_DEVICES = 4  # largest dp*tp product exercised below
 
@@ -54,39 +62,79 @@ def _inputs(dtype: Any, batch: int = 64, d: int = 256, f: int = 64) -> tuple[jax
     return a, w
 
 
-@pytest.mark.parametrize("mesh", MESHES, ids=[f"dp{dp}_tp{tp}" for dp, tp in MESHES])
+@pytest.mark.parametrize("mesh_shape", MESHES, ids=[f"dp{dp}_tp{tp}" for dp, tp in MESHES])
 @pytest.mark.parametrize("dtype_name", list(DTYPES.keys()))
-def test_naive_matches_unsharded_matmul(dtype_name: str, mesh: tuple[int, int]) -> None:
+def test_naive_matches_unsharded_matmul(dtype_name: str, mesh_shape: tuple[int, int]) -> None:
     """Pin the oracle against the unsharded f32-accumulated reference across
     mesh shapes. A regression that broke the all_reduce (dropped the psum,
     reduced over the wrong axis, or psummed the wrong dtype) would land here
     as a tp-fold error on every output element."""
-    dp, tp = mesh
+    dp, tp = mesh_shape
     dtype, tol = DTYPES[dtype_name]
     a, w = _inputs(dtype)
     ref = (a.astype(jnp.float32) @ w.astype(jnp.float32)).astype(dtype)
+    mesh = make_mesh(dp, tp)
+    a_s, w_s = shard_inputs(mesh, a, w)
     np.testing.assert_allclose(
-        np.asarray(sharded_matmul_naive(a, w, dp=dp, tp=tp)),
+        np.asarray(sharded_matmul_naive(a_s, w_s, mesh=mesh)),
         np.asarray(ref),
         rtol=tol["rtol"],
         atol=tol["atol"],
     )
 
 
-@pytest.mark.parametrize("mesh", MESHES, ids=[f"dp{dp}_tp{tp}" for dp, tp in MESHES])
+@pytest.mark.parametrize("mesh_shape", MESHES, ids=[f"dp{dp}_tp{tp}" for dp, tp in MESHES])
 @pytest.mark.parametrize("dtype_name", list(DTYPES.keys()))
 @pytest.mark.parametrize("variant", VARIANTS.values(), ids=list(VARIANTS.keys()))
 def test_matches_naive(
     variant: Callable[..., jax.Array],
     dtype_name: str,
-    mesh: tuple[int, int],
+    mesh_shape: tuple[int, int],
 ) -> None:
-    dp, tp = mesh
+    dp, tp = mesh_shape
     dtype, tol = DTYPES[dtype_name]
     a, w = _inputs(dtype)
+    mesh = make_mesh(dp, tp)
+    a_s, w_s = shard_inputs(mesh, a, w)
     np.testing.assert_allclose(
-        np.asarray(partial(variant, dp=dp, tp=tp)(a, w)),
-        np.asarray(sharded_matmul_naive(a, w, dp=dp, tp=tp)),
+        np.asarray(variant(a_s, w_s, mesh=mesh)),
+        np.asarray(sharded_matmul_naive(a_s, w_s, mesh=mesh)),
         rtol=tol["rtol"],
         atol=tol["atol"],
     )
+
+
+# ---- sharding source-of-truth helpers -----------------------------------
+
+
+def test_make_mesh_builds_named_dp_tp_grid() -> None:
+    """make_mesh is the single source of truth for the (dp, tp) topology and
+    the ("x", "y") axis naming the kernels read back via mesh.axis_names."""
+    mesh = make_mesh(2, 2)
+    assert mesh.axis_names == MESH_AXES
+    assert mesh.devices.shape == (2, 2)
+
+
+def test_shard_inputs_places_a_and_w_on_op_specs() -> None:
+    """The harness must hand the kernel inputs already laid out the way its
+    shard_map expects — A over (dp, tp), W over (tp, replicated) — so no
+    reshard happens on the timed path. Pin that shard_inputs produces exactly
+    the NamedSharding input_specs declares for the same mesh."""
+    mesh = make_mesh(2, 2)
+    dp_axis, tp_axis = mesh.axis_names
+    a, w = _inputs(jnp.bfloat16)
+    a_s, w_s = shard_inputs(mesh, a, w)
+    assert a_s.sharding == NamedSharding(mesh, P(dp_axis, tp_axis))
+    assert w_s.sharding == NamedSharding(mesh, P(tp_axis, None))
+    # input_specs is the contract shard_map consumes; shard_inputs must match.
+    a_spec, w_spec = input_specs(mesh)
+    assert a_s.sharding == NamedSharding(mesh, a_spec)
+    assert w_s.sharding == NamedSharding(mesh, w_spec)
+
+
+def test_output_spec_is_batch_sharded_tp_replicated() -> None:
+    """Output is sharded on batch over dp, replicated over tp (the psum closes
+    the partials). Pin it so a shard_map out_specs regression is caught here."""
+    mesh = make_mesh(2, 2)
+    dp_axis, _ = mesh.axis_names
+    assert output_spec(mesh) == P(dp_axis, None)

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from benchmarks.suites.sharded_matmul import _make_parser
 
-from tpu_kernels.ops.sharded_matmul.naive import DEFAULT_DP, DEFAULT_TP
+from tpu_kernels.ops.sharded_matmul.sharding import DEFAULT_DP, DEFAULT_TP
 
 
 def test_mesh_defaults_match_kernel_defaults() -> None:

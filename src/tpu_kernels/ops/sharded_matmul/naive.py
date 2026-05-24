@@ -29,28 +29,22 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
-from jax.experimental import mesh_utils
 from jax.sharding import Mesh
-from jax.sharding import PartitionSpec as P
 
-# x = data-parallel (batch) axis; y = tensor-parallel (contracting) axis.
-MESH_AXES: tuple[str, str] = ("x", "y")
-DEFAULT_DP = 2
-DEFAULT_TP = 2
+from tpu_kernels.ops.sharded_matmul.sharding import input_specs, output_spec
 
 
-def make_mesh(dp: int, tp: int) -> Mesh:
-    """Build the ``(dp, tp)`` device mesh on ``MESH_AXES``.
+def matmul(a: jax.Array, w: jax.Array, *, mesh: Mesh) -> jax.Array:
+    """Row-parallel ``a @ w`` over the caller-supplied ``mesh``.
 
-    ``dp * tp`` must equal the number of available devices;
-    ``create_device_mesh`` raises otherwise.
+    ``mesh`` is passed in rather than built here: the harness owns the
+    sharding source of truth (see ``sharding.py``) and hands the kernel
+    inputs already placed on it, mirroring a production layer. The axis
+    names and per-tensor layout come from ``mesh`` / ``sharding.py``, so the
+    contracting axis the ``psum`` reduces over is whatever the mesh's second
+    axis is named.
     """
-    return Mesh(mesh_utils.create_device_mesh((dp, tp)), MESH_AXES)
-
-
-def matmul(a: jax.Array, w: jax.Array, *, dp: int = DEFAULT_DP, tp: int = DEFAULT_TP) -> jax.Array:
-    dp_axis, tp_axis = MESH_AXES
-    mesh = make_mesh(dp, tp)
+    _dp_axis, tp_axis = mesh.axis_names
 
     def _local(a_local: jax.Array, w_local: jax.Array) -> jax.Array:
         partial = a_local.astype(jnp.float32) @ w_local.astype(jnp.float32)
@@ -59,6 +53,6 @@ def matmul(a: jax.Array, w: jax.Array, *, dp: int = DEFAULT_DP, tp: int = DEFAUL
     return jax.shard_map(
         _local,
         mesh=mesh,
-        in_specs=(P(dp_axis, tp_axis), P(tp_axis, None)),
-        out_specs=P(dp_axis, None),
+        in_specs=input_specs(mesh),
+        out_specs=output_spec(mesh),
     )(a, w)
