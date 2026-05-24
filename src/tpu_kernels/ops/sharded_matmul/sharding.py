@@ -60,10 +60,11 @@ def input_specs(mesh: Mesh) -> tuple[P, P]:
 
 
 def output_spec(mesh: Mesh) -> P:
-    """Partition spec for the output: batch sharded over ``dp``, replicated
-    over ``tp`` (the ``psum`` over ``tp`` reduces the partials)."""
-    dp_axis, _tp_axis = mesh.axis_names
-    return P(dp_axis, None)
+    """Partition spec for the output: batch sharded over ``dp``, output feature
+    dim sharded over ``tp`` — the reduce-scatter (``psum_scatter`` in naive, a
+    ring in xla) reduces the partials and scatters the result along F."""
+    dp_axis, tp_axis = mesh.axis_names
+    return P(dp_axis, tp_axis)
 
 
 def shard_inputs(mesh: Mesh, a: jax.Array, w: jax.Array) -> tuple[jax.Array, jax.Array]:

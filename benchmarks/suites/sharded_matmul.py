@@ -5,10 +5,11 @@ With a custom mesh: `... --dp 4 --tp 2` (needs dp*tp actual devices)
 With HLO dump: `... --dump-hlo`
 With xprof trace: `... --profile-dir /tmp/sharded_matmul_trace`
 
-Single-shape bench of the local-matmul + all_reduce row-parallel linear
-``A[B_x, D_y] @ W[D_y, F] -> Out[B_x, F]``: batch sharded data-parallel
+Single-shape bench of the reduce-scatter row-parallel linear
+``A[B_x, D_y] @ W[D_y, F] -> Out[B_x, F_y]``: batch sharded data-parallel
 over ``x`` (size ``--dp``), contracting dim sharded tensor-parallel over
-``y`` (size ``--tp``). Defaults to a 2x2 mesh.
+``y`` (size ``--tp``), output feature dim reduce-scattered over ``y``.
+Defaults to a 2x2 mesh.
 
 Uses the base `--timing device` default: the runner now coalesces XPlane
 events across all TPU planes (runner.py `_coalesce_planes`), so device
@@ -16,7 +17,7 @@ timing works multi-chip. It reads the per-call cost straight off the TPU
 clock at k=1, which sidesteps the unroll-mode trap this op exposed —
 the single-call cost (~10ms here) sits right on `_choose_k`'s 10ms target,
 so unroll flips between k=1 and k=2 on sizing noise, and because chaining a
-collective lets XLA overlap each call's all_reduce with the next call's
+collective lets XLA overlap each call's reduce-scatter with the next call's
 matmul, the per-call number swings ~1.5x with that coin-flip. `--timing
 unroll` is still available for CPU.
 
@@ -25,11 +26,10 @@ mesh has nowhere to land otherwise, and silently running on a different
 topology would either crash deep in shard_map or — worse — report
 numbers against the wrong mesh.
 
-Variants are `naive` and `xla` (today `jax.jit(naive)`). They share a
-trace; the side-by-side comparison validates the harness end-to-end
-and gives the xla slot a place to grow into when a JAX-side rewrite
-(collective-aware reshard, manual reduce_scatter + all_gather, ...) is
-worth comparing.
+Variants are `naive` (a single `psum_scatter`) and `xla` (a hand-rolled
+`ppermute` ring reduce-scatter). Both produce the same reduce-scattered
+output; the side-by-side comparison checks the ring against the
+single-collective oracle and validates the harness end-to-end.
 """
 
 from __future__ import annotations
@@ -96,14 +96,16 @@ def main() -> None:
     flops = 2 * batch * d * f
     # HBM, cluster total: A[B_x, D_y] is fully partitioned (read once = B*D);
     # W[D_y, F] is replicated over the dp axis (read dp times = dp*D*F); the
-    # output O[B_x, F] is replicated over the tp axis (written tp times =
-    # tp*B*F). The all_reduce traffic itself rides on ICI, not HBM.
-    nbytes = (batch * d + dp * d * f + tp * batch * f) * bytes_per_elem
-    # Ring all_reduce of the (B/dp, F) f32 partial over the tp-axis ring moves,
-    # summed across all dp*tp chips, 2*(tp-1) * B * F f32 elements. Zero when
-    # tp == 1 (no contraction to reduce). Partials are f32 inside
-    # naive._local (the cast back happens after psum), so 4 bytes/element.
-    ici_bytes = 2 * (tp - 1) * batch * f * 4
+    # reduce-scattered output O[B_x, F_y] is fully partitioned over tp (written
+    # once = B*F, each chip its F-shard). The collective traffic rides on ICI,
+    # not HBM.
+    nbytes = (batch * d + dp * d * f + batch * f) * bytes_per_elem
+    # Reduce-scatter of the (B/dp, F) f32 partial over the tp-axis ring moves,
+    # summed across all dp*tp chips, (tp-1) * B * F f32 elements — half the
+    # all_reduce volume, since there's no all_gather leg. Zero when tp == 1
+    # (nothing to reduce). Partials are f32 (naive psum_scatters f32; the xla
+    # ring accumulates in f32), so 4 bytes/element.
+    ici_bytes = (tp - 1) * batch * f * 4
     workload = Workload(
         op="sharded_matmul",
         flops=flops,

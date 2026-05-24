@@ -1,11 +1,13 @@
-"""XLA sharded matmul: manual all-reduce collective matmul.
+"""XLA sharded matmul: hand-rolled ring reduce-scatter matmul.
 
-Row-parallel ``A[B_x, D_y] @ W[D_y, F] -> Out[B_x, F]`` under ``shard_map``.
-Each device computes a local ``(B/dp, D/tp) @ (D/tp, F_block)`` partial over
-its contracting-dim shard, then ``psum``s that partial over the ``tp`` axis to
-close the contraction. The output ``F`` dim is walked in ``stride``-wide
-blocks via ``fori_loop`` — one all-reduce per block — rather than a single
-monolithic collective over the whole output.
+Row-parallel ``A[B_x, D_y] @ W[D_y, F] -> Out[B_x, F_y]`` under ``shard_map``,
+implementing the reduce-scatter with an explicit ``ppermute`` ring rather than
+the single ``psum_scatter`` the naive oracle uses. The output F dim is split
+into ``axis_size`` chunks of width ``stride = F / axis_size``; over
+``axis_size - 1`` ring hops each chip folds its partial for one chunk into a
+travelling accumulator and rotates it one step, so after the loop the
+accumulator resting on chip ``y`` is exactly chunk ``y`` minus this chip's own
+contribution, which the final fold adds. Result: chip ``y`` holds ``Out[:, F_y]``.
 
 ``mesh`` is effectively a ``static_argname``: it carries the sharding the
 caller (harness, see ``sharding.py``) built and placed the inputs on, so it
@@ -27,31 +29,44 @@ def matmul(a: jax.Array, w: jax.Array, *, mesh: Mesh) -> jax.Array:
     ``mesh`` is passed in rather than built here: the harness owns the
     sharding source of truth (see ``sharding.py``) and hands the kernel
     inputs already placed on it, mirroring a production layer. The axis
-    names and per-tensor layout come from ``mesh`` / ``sharding.py``, so the
-    contracting axis the ``psum`` reduces over is whatever the mesh's second
-    axis is named.
+    names and per-tensor layout come from ``mesh`` / ``sharding.py``.
     """
     _dp_axis, tp_axis = mesh.axis_names
 
-    stride = min(1024, w.shape[1])
-
     def _local(a_local: jax.Array, w_local: jax.Array) -> jax.Array:
+        axis_size = jax.lax.axis_size(tp_axis)
+        rank = jax.lax.axis_index(tp_axis)
+        stride = w.shape[1] // axis_size
+
+        accumulator_type = jnp.float32
+        # accumulator_type = a_local.dtype
         result = jax.lax.pcast(
-            jnp.empty((a_local.shape[0], w_local.shape[1]), dtype=a_local.dtype),
-            (_dp_axis,),
+            jnp.zeros((a_local.shape[0], stride), dtype=accumulator_type),
+            (_dp_axis, tp_axis),
             to="varying",
         )
 
+        perm = [(j, (j + 1) % axis_size) for j in range(axis_size)]
+
         def loop_body(i, result):
-            w_slice = jax.lax.dynamic_slice_in_dim(w_local, i * stride, stride, axis=1)
-            local_result = a_local.astype(jnp.float32) @ w_slice
-            result_slice = jax.lax.psum(local_result, axis_name=tp_axis).astype(result.dtype)
-            slice_loc = (jnp.int32(0), i * stride)
-            result = jax.lax.dynamic_update_slice(result, result_slice, slice_loc)
+            # Fold this chip's partial for chunk (rank + axis_size-1-i) % axis_size
+            # into the travelling accumulator, then rotate one hop. After axis_size-1 hops
+            # the buffer landing on chip `rank` is the (incomplete) sum for chunk
+            # `rank` — missing only this chip's own term, added below.
+            chunk = (rank + axis_size - 1 - i) % axis_size
+            w_slice = jax.lax.dynamic_slice_in_dim(w_local, chunk * stride, stride, axis=1)
+            local_result = jnp.dot(a_local, w_slice, preferred_element_type=accumulator_type)
+            result = result + local_result
+            result = jax.lax.ppermute(result, axis_name=tp_axis, perm=perm)
             return result
 
-        result = jax.lax.fori_loop(0, w_local.shape[1] // stride, loop_body, result)
-        return result
+        # result = jax.lax.fori_loop(0, axis_size - 1, loop_body, result)
+        for i in range(axis_size - 1):
+            result = loop_body(i, result)
+
+        w_slice = jax.lax.dynamic_slice_in_dim(w_local, rank * stride, stride, axis=1)
+        result = result + jnp.dot(a_local, w_slice, preferred_element_type=accumulator_type)
+        return result.astype(a_local.dtype)
 
     return jax.shard_map(
         _local,

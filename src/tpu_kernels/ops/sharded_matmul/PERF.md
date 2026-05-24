@@ -1,6 +1,6 @@
-# Sharded matmul (DP batch + TP contracting, all_reduce after)
+# Sharded matmul (DP batch + TP contracting, reduce-scatter)
 
-Target: ≥80% MFU @ (B=8192, D=8192, F=8192), bf16, dp=2/tp=2 on v5e-4
-Current: ~30% MFU (naive 30.1%, xla 29.4%) @ (B=8192, D=8192, F=8192), bf16, dp=2/tp=2 on v5e-4, device timing. Compute-bound on the roofline — intensity 1638 F/B sits well above both the 240 F/B HBM and 547 F/B ICI ridges. JSON: `bench_history/sharded_matmul/20260524T185059_254832Z.json`.
-Bottleneck: the local matmul runs in f32 — `naive.py` casts both operands to f32 for the contracting-dim inner product (oracle precision), and `xla.py`'s per-block collective does the same — but the roofline scores MFU against the bf16 peak, so the f32 MAC path caps MFU at the measured ~30%, far below the bf16 plateau. `xla.py`'s per-128-block `psum` tiling lands within ~1% of `naive.py`'s single all_reduce, so the block split neither helps nor hurts yet; the serial all_reduce over the contracting axis still sits on the critical path. Disentangling the two (a bf16 local matmul vs the comm tail) is the first real tuning step; the serial comm is what Stage B's `reduce_scatter ∘ all_gather` and Stage C's overlapped TP layer are meant to hide.
-Next: probe whether a bf16 local matmul (f32 accumulate only) lifts MFU off the ~30% f32 cap before reaching for the collective-overlap rewrite.
+Target: ≥80% of speed-of-light @ (B=8192, D=8192, F=8192) bf16, dp2/tp2 on v5e-4.
+Current: not measured yet — no reduce-scatter baseline benched (4aba0a2's ~30% MFU was the earlier all-reduce variant).
+Bottleneck: unhidden reduce-scatter comm, not compute — compute scales ∝ B·D·F while the collective is ∝ B·F, so large-D shapes amortize it and approach speed-of-light in exploratory runs.
+Next: improve pipeline in the ring to better hide communication.

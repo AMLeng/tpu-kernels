@@ -66,9 +66,11 @@ def _inputs(dtype: Any, batch: int = 64, d: int = 256, f: int = 64) -> tuple[jax
 @pytest.mark.parametrize("dtype_name", list(DTYPES.keys()))
 def test_naive_matches_unsharded_matmul(dtype_name: str, mesh_shape: tuple[int, int]) -> None:
     """Pin the oracle against the unsharded f32-accumulated reference across
-    mesh shapes. A regression that broke the all_reduce (dropped the psum,
-    reduced over the wrong axis, or psummed the wrong dtype) would land here
-    as a tp-fold error on every output element."""
+    mesh shapes. The reduce-scatter output is sharded on F over tp; out_specs
+    reassembles the per-chip F-shards into the full ``[B, F]``, which must equal
+    the unsharded matmul. A regression that broke the reduce-scatter (dropped
+    the psum_scatter, scattered the wrong dim, or reduced the wrong axis) lands
+    here as a tp-fold or wrong-shard error on every output element."""
     dp, tp = mesh_shape
     dtype, tol = DTYPES[dtype_name]
     a, w = _inputs(dtype)
@@ -132,9 +134,10 @@ def test_shard_inputs_places_a_and_w_on_op_specs() -> None:
     assert w_s.sharding == NamedSharding(mesh, w_spec)
 
 
-def test_output_spec_is_batch_sharded_tp_replicated() -> None:
-    """Output is sharded on batch over dp, replicated over tp (the psum closes
-    the partials). Pin it so a shard_map out_specs regression is caught here."""
+def test_output_spec_is_batch_and_feature_sharded() -> None:
+    """Output is sharded on batch over dp and on the output feature dim over tp
+    — the reduce-scatter keeps each chip its F-shard rather than replicating the
+    full output. Pin it so a shard_map out_specs regression is caught here."""
     mesh = make_mesh(2, 2)
-    dp_axis, _ = mesh.axis_names
-    assert output_spec(mesh) == P(dp_axis, None)
+    dp_axis, tp_axis = mesh.axis_names
+    assert output_spec(mesh) == P(dp_axis, tp_axis)
