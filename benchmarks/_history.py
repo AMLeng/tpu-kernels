@@ -26,7 +26,7 @@ def git_sha() -> str | None:
     so untracked files count too (a forgotten ``.py`` in ``benchmarks/``
     would affect the run).
 
-    Two paths are excluded from the porcelain check:
+    Three classes of path are excluded from the porcelain check:
 
     * ``bench_history/`` — output, not input. A JSON record from a previous
       run can't have affected the run we're about to stamp; without the
@@ -36,6 +36,11 @@ def git_sha() -> str | None:
       behavior or bench output, so iterating on a test (e.g. tightening a
       threshold, adding ``@pytest.mark.xfail``) shouldn't invalidate
       JSONs taken under the same kernel code.
+    * dotfiles (any path whose *basename* starts with ``.``) — editor/OS
+      cruft like a vim ``.foo.py.swp`` swap or ``.DS_Store``. These aren't
+      bench input, and an open editor session would otherwise mark every
+      run dirty. Only the basename is checked, so a real source file inside
+      a dot-*directory* (e.g. ``.github/workflows/ci.yml``) still counts.
     """
     try:
         head = subprocess.run(
@@ -63,8 +68,28 @@ def git_sha() -> str | None:
             text=True,
             timeout=2,
         )
-        if status.returncode == 0 and status.stdout.strip():
+        if status.returncode == 0 and _has_dirtying_entry(status.stdout):
             sha = f"{sha}-dirty"
         return sha
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
+
+
+def _has_dirtying_entry(porcelain: str) -> bool:
+    """True if any ``git status --porcelain`` line names a non-dotfile.
+
+    Each porcelain v1 line is ``XY <path>`` (path from column 3); a rename is
+    ``old -> new``, in which case the new path is what's on disk. We ignore
+    entries whose basename starts with ``.`` so editor swap files and the like
+    don't taint the SHA.
+    """
+    for line in porcelain.splitlines():
+        if not line.strip():
+            continue
+        path = line[3:]
+        if " -> " in path:  # rename/copy: "old -> new"
+            path = path.split(" -> ", 1)[1]
+        path = path.strip().strip('"')
+        if not Path(path).name.startswith("."):
+            return True
+    return False

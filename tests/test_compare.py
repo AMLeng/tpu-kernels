@@ -234,6 +234,76 @@ def test_git_sha_dirty_when_tests_and_code_both_changed(
     assert sha.endswith("-dirty")
 
 
+def test_git_sha_clean_when_only_untracked_dotfile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dotfiles (basename starts with ``.``) are editor/OS cruft — a vim
+    ``.foo.py.swp`` swap or a ``.DS_Store`` is not bench input and shouldn't
+    taint the SHA. Without filtering them, an open editor session marks every
+    bench run dirty."""
+    _init_repo(tmp_path)
+    (tmp_path / ".DS_Store").write_text("junk")
+    (tmp_path / ".f.swp").write_text("vim swap")
+    monkeypatch.setattr("benchmarks._history.REPO_ROOT", tmp_path)
+    sha = git_sha()
+    assert sha is not None
+    assert not sha.endswith("-dirty")
+
+
+def test_git_sha_clean_when_dotfile_is_nested(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exclusion is on the file's *basename*, so a swap file next to a
+    source file (e.g. ``src/ops/.xla.py.swp``) is filtered too. The parent
+    dir is tracked so git lists the file by full path rather than collapsing
+    the untracked directory."""
+    _init_repo(tmp_path)
+    nested = tmp_path / "src" / "ops"
+    nested.mkdir(parents=True)
+    (nested / "kernel.py").write_text("x = 1")
+    subprocess.run(["git", "add", "src/ops/kernel.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add kernel"], cwd=tmp_path, check=True)
+    (nested / ".xla.py.swp").write_text("vim swap")  # untracked swap by a tracked file
+    monkeypatch.setattr("benchmarks._history.REPO_ROOT", tmp_path)
+    sha = git_sha()
+    assert sha is not None
+    assert not sha.endswith("-dirty")
+
+
+def test_git_sha_dirty_when_dotfile_and_code_both_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Filtering dotfiles must not mask a real code change alongside one
+    (sibling to the bench_history / tests both-changed tests)."""
+    _init_repo(tmp_path)
+    (tmp_path / ".f.swp").write_text("vim swap")
+    (tmp_path / "f").write_text("modified")  # real tracked change alongside
+    monkeypatch.setattr("benchmarks._history.REPO_ROOT", tmp_path)
+    sha = git_sha()
+    assert sha is not None
+    assert sha.endswith("-dirty")
+
+
+def test_git_sha_dirty_when_file_in_dot_directory_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the basename matters: a real file inside a dot-*directory* (e.g.
+    ``.github/workflows/ci.yml``) has a non-dot basename and must still count
+    as dirty — we exclude dotfiles, not everything under a dot path. The dir
+    is tracked (as it is in practice), so git lists ``ci.yml`` by full path."""
+    _init_repo(tmp_path)
+    gh = tmp_path / ".github" / "workflows"
+    gh.mkdir(parents=True)
+    (gh / "ci.yml").write_text("on: push")
+    subprocess.run(["git", "add", ".github/workflows/ci.yml"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add ci"], cwd=tmp_path, check=True)
+    (gh / "ci.yml").write_text("on: pull_request")  # modify tracked file in dot-dir
+    monkeypatch.setattr("benchmarks._history.REPO_ROOT", tmp_path)
+    sha = git_sha()
+    assert sha is not None
+    assert sha.endswith("-dirty")
+
+
 def _history_row() -> BenchRow:
     """Single fake (name, BenchResult, Roofline) triple for _write_history tests."""
     br = BenchResult(name="v", times_s=[1.0], warmup_iters=1, timed_iters=1)
